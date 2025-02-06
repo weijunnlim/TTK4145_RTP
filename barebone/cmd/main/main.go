@@ -3,9 +3,8 @@ package main
 import (
 	"barebone/pkg/drivers"
 	"barebone/pkg/elevator"
-
 	//"barebone/pkg/utils"
-	"fmt"
+	//"fmt"
 )
 
 func main() {
@@ -44,23 +43,23 @@ func main() {
 	for {
 		select {
 		case a := <-drv_buttons:
-			fmt.Printf("%+v\n", a)
+			//fmt.Printf("%+v\n", a)
 			newOrders <- a
 
-		case a := <-drv_floors:
-			fmt.Printf("%+v\n", a)
+		case <-drv_floors:
+			//fmt.Printf("%+v\n", a)
 			elevatorFSM.UpdateElevatorState(elevator.EventArrivedAtFloor)
 
 		case a := <-drv_obstr:
-			fmt.Printf("%+v\n", a)
-			if a == true {
+			//fmt.Printf("%+v\n", a)
+			if a {
 				elevatorFSM.UpdateElevatorState(elevator.EventDoorObstructed)
 			} else {
 				elevatorFSM.UpdateElevatorState(elevator.EventDoorReleased)
 			}
 
-		case a := <-drv_stop:
-			fmt.Printf("%+v\n", a)
+		case <-drv_stop:
+			//fmt.Printf("%+v\n", a)
 			for f := 0; f < numFloors; f++ {
 				for b := drivers.ButtonType(0); b < 3; b++ {
 					drivers.SetButtonLamp(b, f, false)
