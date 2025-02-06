@@ -18,16 +18,16 @@ const (
 )
 
 type Elevator struct {
-	state        ElevatorState
-	currentFloor int
-	targetFloor  int
+	state          ElevatorState
+	currentFloor   int
+	targetFloor    int
+	doorObstructed bool
 
 	// Kanaler for kommunikasjon
-	orders         <-chan drivers.ButtonEvent // Mottar ordre fra QueueManager
-	ready          chan<- bool                // Signaliserer til QueueManager at heisen er klar
-	fsmEvents      chan FsmEvent              // Intern kanal for å trigge state-machine-hendelser
-	doorTimer      *time.Timer
-	doorObstructed bool
+	orders    <-chan drivers.ButtonEvent // Mottar ordre fra QueueManager
+	ready     chan<- bool                // Signaliserer til QueueManager at heisen er klar
+	fsmEvents chan FsmEvent              // Intern kanal for å trigge state-machine-hendelser
+	doorTimer *time.Timer
 }
 
 type FsmEvent int
@@ -71,7 +71,7 @@ func NewElevator(orders <-chan drivers.ButtonEvent, ready chan<- bool) *Elevator
 		currentFloor:   validFloor,
 		orders:         orders,
 		ready:          ready,
-		fsmEvents:      make(chan FsmEvent),
+		fsmEvents:      make(chan FsmEvent, 10),
 		doorTimer:      nil,
 		doorObstructed: drivers.GetObstruction(),
 	}
@@ -80,9 +80,6 @@ func NewElevator(orders <-chan drivers.ButtonEvent, ready chan<- bool) *Elevator
 // Run starter heisens state-machine-løkke
 func (e *Elevator) Run() {
 
-	// doorTimer vil bli startet hver gang vi åpner døra (DoorOpen).
-	// Vi stopper timere i en `select` når vi er ferdige med dør-åpning.
-	var doorTimer *time.Timer
 	fmt.Printf("Elevator has been initilized\n")
 
 	for {
@@ -97,15 +94,13 @@ func (e *Elevator) Run() {
 
 		// 4. Håndter dør-timeren
 		case <-func() <-chan time.Time {
-			// For å unngå nil-pointer, sjekker vi om doorTimer er satt
-			if doorTimer == nil {
-				return make(chan time.Time) // tom kanal som aldri sender
+			if e.doorTimer == nil {
+				return make(chan time.Time)
 			}
-			return doorTimer.C
+			return e.doorTimer.C
 		}():
-			// Door-timer har utløpt -> vi sender eventDoorTimerElapsed
+			fmt.Printf("Firing timer expired")
 			e.fsmEvents <- EventDoorTimerElapsed
-			doorTimer = nil
 		}
 	}
 }
@@ -141,26 +136,29 @@ func (e *Elevator) handleNewOrder(order drivers.ButtonEvent) {
 
 // handleFsmEventhåndterer interne hendelser
 func (e *Elevator) handleFSMEvent(ev FsmEvent) {
+	fmt.Printf("New event registered: %d\n", ev)
 	switch ev {
 	case EventArrivedAtFloor:
-		drivers.SetFloorIndicator(e.currentFloor)
-		e.currentFloor = drivers.GetFloor()
-		drivers.SetFloorIndicator(e.currentFloor)
-		if e.currentFloor == e.targetFloor {
-			fmt.Printf("[ElevatorFSM] Ankommet måletasje (%d). Åpner dør.\n", e.currentFloor)
-			e.doorTimer.Reset(3 * time.Second)
-			drivers.SetMotorDirection(drivers.MD_Stop)
-			drivers.SetDoorOpenLamp(true)
-			drivers.SetButtonLamp(drivers.BT_Cab, e.currentFloor, false)
-			drivers.SetButtonLamp(drivers.BT_HallUp, e.currentFloor, false)
-			drivers.SetButtonLamp(drivers.BT_HallDown, e.currentFloor, false)
-			e.transitionTo(DoorOpen)
-			//drivers.SetButtonLamp(drivers.BT_Cab, e.currentFloor, false)
+		if e.state == MovingUp || e.state == MovingDown {
+			drivers.SetFloorIndicator(e.currentFloor)
+			e.currentFloor = drivers.GetFloor()
+			drivers.SetFloorIndicator(e.currentFloor)
+			if e.currentFloor == e.targetFloor {
+				fmt.Printf("[ElevatorFSM] Ankommet måletasje (%d). Åpner dør.\n", e.currentFloor)
+				drivers.SetMotorDirection(drivers.MD_Stop)
+				drivers.SetDoorOpenLamp(true)
+				drivers.SetButtonLamp(drivers.BT_Cab, e.currentFloor, false)
+				drivers.SetButtonLamp(drivers.BT_HallUp, e.currentFloor, false)
+				drivers.SetButtonLamp(drivers.BT_HallDown, e.currentFloor, false)
+				e.transitionTo(DoorOpen)
+			}
 		}
 
 	case EventDoorTimerElapsed:
+		fmt.Printf("Timer elapsed, closing door")
 		if e.state == DoorOpen {
 			fmt.Printf("[ElevatorFSM] Dør er lukket. Går til Idle.\n")
+			drivers.SetDoorOpenLamp(false)
 			e.transitionTo(Idle)
 		}
 
@@ -174,7 +172,6 @@ func (e *Elevator) handleFSMEvent(ev FsmEvent) {
 		if e.state == DoorObstructed {
 			fmt.Println("[ElevatorFSM] Door hold released.")
 			e.transitionTo(DoorOpen)
-			e.doorTimer.Reset(3 * time.Second)
 		}
 
 	case EventSetError:
@@ -186,23 +183,47 @@ func (e *Elevator) handleFSMEvent(ev FsmEvent) {
 
 // transitionTo utfører overgang til en ny tilstand og utfører evt. logikk
 func (e *Elevator) transitionTo(newState ElevatorState) {
+	fmt.Println("Transitioning to new state")
+	/*
+		if e.state == DoorOpen && e.doorTimer != nil {
+			if !e.doorTimer.Stop() {
+				<-e.doorTimer.C // drain
+			}
+			e.doorTimer = nil
+		}
+	*/
+	fmt.Println("Transitioning to new state")
 	e.state = newState
 	switch newState {
 	case Idle:
+		//e.state = Idle
 		// Signaler at heisen er klar til å motta ny ordre
 		fmt.Println("[ElevatorFSM] Tilstand = Idle -> Heisen er ledig.")
 		e.ready <- true
 
 	case DoorOpen:
-		go func() {
-			e.fsmEvents <- EventDoorTimerElapsed
-			drivers.SetDoorOpenLamp(false)
-		}()
+		//e.state = DoorOpen
+		e.doorTimer = time.NewTimer(3 * time.Second) //This works
+
+		/*
+			go func() {
+				e.fsmEvents <- EventDoorTimerElapsed
+				drivers.SetDoorOpenLamp(false)
+				e.transitionTo(Idle)
+			}()
+		*/
 
 	case DoorObstructed:
-		e.doorTimer.Stop()
+		if e.doorTimer != nil {
+			// Stop the timer if we obstruct the door
+			if !e.doorTimer.Stop() {
+				<-e.doorTimer.C
+			}
+			e.doorTimer = nil
+		}
+		//e.doorTimer.Stop()
 		fmt.Println("[ElevatorFSM] State = DoorObstructeed. Door is held open indefinitely.")
-		e.ready <- false
+		//e.ready <- false
 
 	case MovingUp:
 		fmt.Println("[ElevatorFSM] Tilstand = MovingUp -> Starter bevegelse oppover.")
