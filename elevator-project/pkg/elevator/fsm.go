@@ -2,157 +2,225 @@ package elevator
 
 import (
 	"elevator-project/pkg/drivers"
+	"elevator-project/pkg/orders"
 	"fmt"
-	"sync"
 	"time"
 )
 
-// Elevator states
-type State int
+type ElevatorState int
 
 const (
-	Idle State = iota
+	Idle ElevatorState = iota
+	MovingUp
+	MovingDown
 	DoorOpen
-	Moving
-	ErrorState
+	DoorObstructed
+	Error
 )
 
-type ElevatorFSM struct {
-	CurrentState State
-	CurrentFloor int
-	Direction    drivers.MotorDirection
-	RequestQueue [4][3]bool //Currently hardcoded
-	Mutex        sync.Mutex
-	Processing   bool
-	NextOrder    chan int
-	Queue		 *OrderQueue
+type FsmEvent int
+
+const (
+	EventArrivedAtFloor FsmEvent = iota
+	EventDoorTimerElapsed
+	EventDoorObstructed
+	EventDoorReleased
+	EventSetError
+)
+
+type Elevator struct {
+	state        ElevatorState
+	currentFloor int
+	targetFloor  int
+	rm           *orders.RequestMatrix
+	orders       chan drivers.ButtonEvent
+	fsmEvents    chan FsmEvent
+	doorTimer    *time.Timer
 }
 
-func NewElevatorFSM(queue *OrderQueue) *ElevatorFSM {
-	fsm := &ElevatorFSM{
-		CurrentState: Idle,
-		CurrentFloor: -1, // Unknown at startup
-		Direction:    drivers.MD_Stop,
-		Processing:   false,
-		NextOrder:    make(chan int, 1),
-		Queue:		  queue,
+func NewElevator(rm *orders.RequestMatrix) *Elevator {
+	drivers.SetMotorDirection(drivers.MD_Up)
+	foundFloorChan := make(chan int)
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			<-ticker.C
+			currentFloor := drivers.GetFloor()
+			if currentFloor != -1 {
+				foundFloorChan <- currentFloor
+				drivers.SetMotorDirection(drivers.MD_Stop)
+				return
+			}
+		}
+	}()
+
+	validFloor := <-foundFloorChan
+
+	return &Elevator{
+		state:        Idle,
+		currentFloor: validFloor,
+		rm:           rm,
+		orders:       make(chan drivers.ButtonEvent, 10),
+		fsmEvents:    make(chan FsmEvent, 10),
 	}
-	go fsm.processOrders()
-	return fsm
 }
 
-func (e *ElevatorFSM) processOrders() {
-	for floor := range e.NextOrder {
-		e.HandleEvent("button_press", floor)
+func (e *Elevator) Run() {
+	for {
+		select {
+		case order := <-e.orders:
+			e.handleNewOrder(order)
+		case ev := <-e.fsmEvents:
+			e.handleFSMEvent(ev)
+		case <-func() <-chan time.Time {
+			if e.doorTimer == nil {
+				return make(chan time.Time)
+			}
+			return e.doorTimer.C
+		}():
+			e.fsmEvents <- EventDoorTimerElapsed
+		default:
+			if e.state == Idle || e.state == MovingUp || e.state == MovingDown {
+				e.checkAndAssignOptimalOrder()
+			}
+			time.Sleep(10 * time.Millisecond) //blocking -> should find a better solution
+		}
 	}
 }
 
-func (e *ElevatorFSM) HandleEvent(event string, param int) {
-	e.Mutex.Lock()
-	defer e.Mutex.Unlock()
-
-	switch event {
-	case "button_press":
-		e.handleButtonPress(param)
-	case "floor_arrival":
-		e.handleFloorArrival(param)
-	case "door_timeout":
-		e.handleDoorTimeout()
-	case "obstruction":
-		e.handleObstruction(param)
-	case "error":
-		e.handleError()
-	}
-}
-
-func (e *ElevatorFSM) handleButtonPress(floor int) {
-	fmt.Println("Button pressed at floor:", floor)
-	if e.Processing {
+func (e *Elevator) handleNewOrder(order drivers.ButtonEvent) {
+	if e.state != Idle && e.state != MovingUp && e.state != MovingDown {
+		e.fsmEvents <- EventSetError
 		return
 	}
-	e.RequestQueue[floor][drivers.BT_Cab] = true
-	e.Processing = true
-	if e.CurrentState == Idle {
-		if floor == e.CurrentFloor {
-			e.changeState(DoorOpen)
-		} else {
-			e.changeState(Moving)
+	e.targetFloor = order.Floor
+	switch {
+	case order.Floor == e.currentFloor:
+		e.elevatorAtCorrectFloor()
+	case order.Floor > e.currentFloor:
+		e.transitionTo(MovingUp)
+	case order.Floor < e.currentFloor:
+		e.transitionTo(MovingDown)
+	}
+}
+
+func (e *Elevator) handleFSMEvent(ev FsmEvent) {
+	switch ev {
+	case EventArrivedAtFloor:
+		if e.state == MovingUp || e.state == MovingDown {
+			e.currentFloor = drivers.GetFloor()
+			drivers.SetFloorIndicator(e.currentFloor)
+			if e.currentFloor == e.targetFloor {
+				e.elevatorAtCorrectFloor()
+			}
 		}
-	}
-}
-
-func (e *ElevatorFSM) handleFloorArrival(floor int) {
-	fmt.Println("Arrived at floor:", floor)
-	e.CurrentFloor = floor
-	drivers.SetFloorIndicator(floor)
-	drivers.SetMotorDirection(drivers.MD_Stop)
-	e.Queue.ElevatorDone <- true
-
-	if e.RequestQueue[floor][drivers.BT_Cab] {
-		e.RequestQueue[floor][drivers.BT_Cab] = false
-		e.changeState(DoorOpen)
-	}
-	e.Processing = false
-	select {
-	case next := <-e.NextOrder:
-		e.HandleEvent("button_press", next)
-	default:
-	}
-}
-
-func (e *ElevatorFSM) handleDoorTimeout() {
-	fmt.Println("Door timeout, closing door")
-	drivers.SetDoorOpenLamp(false)
-	e.changeState(Idle)
-}
-
-func (e *ElevatorFSM) handleObstruction(isObstructed int) {
-	if isObstructed == 1 {
-		e.changeState(ErrorState)
-	} else {
-		if e.CurrentState == ErrorState {
-			e.changeState(Idle)
+	case EventDoorTimerElapsed:
+		if e.state == DoorOpen {
+			drivers.SetDoorOpenLamp(false)
+			e.transitionTo(Idle)
 		}
+	case EventDoorObstructed:
+		if e.state == DoorOpen {
+			e.transitionTo(DoorObstructed)
+		}
+	case EventDoorReleased:
+		if e.state == DoorObstructed {
+			e.transitionTo(DoorOpen)
+		}
+	case EventSetError:
+		e.transitionTo(Error)
+		drivers.SetMotorDirection(drivers.MD_Stop)
 	}
 }
 
-func (e *ElevatorFSM) handleError() {
-	fmt.Println("Error detected! Stopping elevator.")
-	drivers.SetMotorDirection(drivers.MD_Stop)
-	e.changeState(ErrorState)
-}
-
-func (e *ElevatorFSM) changeState(newState State) {
-	fmt.Println("Changing state to:", newState)
-	e.CurrentState = newState
-
+func (e *Elevator) transitionTo(newState ElevatorState) {
+	e.state = newState
 	switch newState {
 	case Idle:
-		drivers.SetMotorDirection(drivers.MD_Stop)
-		select {
-		case next := <-e.NextOrder:
-			e.HandleEvent("button_press", next)
-		default:
-		}
-	case Moving:
-		e.setDirection()
-		drivers.SetMotorDirection(e.Direction)
+		fmt.Println("[ElevatorFSM] State = Idle")
 	case DoorOpen:
-		drivers.SetDoorOpenLamp(true)
-		time.AfterFunc(3*time.Second, func() {
-			e.HandleEvent("door_timeout", 0)
-		})
-	case ErrorState:
+		fmt.Println("[ElevatorFSM] State = DoorOpen")
+		e.doorTimer = time.NewTimer(3 * time.Second)
+	case DoorObstructed:
+		if e.doorTimer != nil {
+			if !e.doorTimer.Stop() {
+				<-e.doorTimer.C
+			}
+			e.doorTimer = nil
+		}
+		fmt.Println("[ElevatorFSM] State = DoorObstructed")
+	case MovingUp:
+		fmt.Println("[ElevatorFSM] State = MovingUp")
+		drivers.SetMotorDirection(drivers.MD_Up)
+	case MovingDown:
+		fmt.Println("[ElevatorFSM] State = MovingDown")
+		drivers.SetMotorDirection(drivers.MD_Down)
+	case Error:
+		fmt.Println("[ElevatorFSM] State = Error")
 		drivers.SetMotorDirection(drivers.MD_Stop)
 	}
 }
 
-func (e *ElevatorFSM) setDirection() {
-	if e.CurrentFloor < len(e.RequestQueue)-1 {
-		e.Direction = drivers.MD_Up
-	} else if e.CurrentFloor > 0 {
-		e.Direction = drivers.MD_Down
-	} else {
-		e.Direction = drivers.MD_Stop
+// checkAndAssignOptimalOrder queries the request matrix for an optimal order.
+// If the elevator is idle, it clears the order immediately and processes it.
+// If the elevator is moving, it updates the target floor if the new order lies
+// between the current floor and the current target, but leaves the request intact.
+func (e *Elevator) checkAndAssignOptimalOrder() {
+	order, found := OptimalAssignment(e.rm, e.currentFloor, e.currentDirection())
+	if found {
+		if e.state == Idle {
+			fmt.Printf("[ElevatorFSM] Optimal order found and cleared (Idle): Floor %d, Button %v\n", order.Floor, order.Button)
+			e.handleNewOrder(order)
+		} else if e.state == MovingUp {
+			if order.Floor > e.currentFloor && order.Floor < e.targetFloor {
+				fmt.Printf("[ElevatorFSM] Updating target from %d to %d (MovingUp)\n", e.targetFloor, order.Floor)
+				e.targetFloor = order.Floor
+			}
+		} else if e.state == MovingDown {
+			if order.Floor < e.currentFloor && order.Floor > e.targetFloor {
+				fmt.Printf("[ElevatorFSM] Updating target from %d to %d (MovingDown)\n", e.targetFloor, order.Floor)
+				e.targetFloor = order.Floor
+			}
+		}
 	}
+}
+
+func (e *Elevator) currentDirection() drivers.MotorDirection {
+	switch e.state {
+	case MovingUp:
+		return drivers.MD_Up
+	case MovingDown:
+		return drivers.MD_Down
+	default:
+		return drivers.MD_Stop
+	}
+}
+
+func (e *Elevator) UpdateElevatorState(ev FsmEvent) {
+	e.fsmEvents <- ev
+}
+
+func (e *Elevator) clearAllLigths() {
+	for b := drivers.ButtonType(0); b < 3; b++ {
+		drivers.SetButtonLamp(b, e.currentFloor, false)
+	}
+}
+
+func (e *Elevator) elevatorAtCorrectFloor() {
+	if e.rm.CabRequests[e.currentFloor] {
+		_ = e.rm.ClearCabRequest(e.currentFloor)
+	}
+	if e.rm.HallRequests[e.currentFloor][0] {
+		_ = e.rm.ClearHallRequest(e.currentFloor, 0)
+	}
+	if e.rm.HallRequests[e.currentFloor][1] {
+		_ = e.rm.ClearHallRequest(e.currentFloor, 1)
+	}
+	drivers.SetMotorDirection(drivers.MD_Stop)
+	drivers.SetDoorOpenLamp(true)
+	e.clearAllLigths()
+	e.transitionTo(DoorOpen)
 }
