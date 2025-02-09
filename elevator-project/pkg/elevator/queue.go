@@ -2,78 +2,87 @@ package elevator
 
 import (
 	"elevator-project/pkg/drivers"
-	"fmt"
-	"sync"
-	"time"
+	"elevator-project/pkg/orders"
+	"math"
 )
 
-// OrderQueue represents a queue for handling button events
-type OrderQueue struct {
-	Queue         []drivers.ButtonEvent
-	Mutex         sync.Mutex
-	AddChan       chan drivers.ButtonEvent
-	NextOrder     chan int
-	ElevatorDone  chan bool // Signal when elevator is done processing an order
-}
-
-// NewOrderQueue initializes an empty OrderQueue
-func NewOrderQueue() *OrderQueue {
-	q := &OrderQueue{
-		Queue:        []drivers.ButtonEvent{},
-		AddChan:      make(chan drivers.ButtonEvent, 10),
-		NextOrder:    make(chan int, 1),
-		ElevatorDone: make(chan bool, 1), // Signal FSM when elevator is done
-	}
-	go q.queueWorker()
-	go q.queuePrinter()
-	go q.processNextOrder() // This now waits for the elevator to finish processing
-	return q
-}
-
-// queueWorker runs in a separate goroutine to handle incoming orders
-func (q *OrderQueue) queueWorker() {
-	for event := range q.AddChan {
-		q.Mutex.Lock()
-		q.Queue = append(q.Queue, event)
-		q.Mutex.Unlock()
-	}
-}
-
-// processNextOrder waits for the elevator to finish before dequeuing the next order
-func (q *OrderQueue) processNextOrder() {
+func DynamicQueueManager(newOrders <-chan drivers.ButtonEvent, elevatorReady <-chan int, sendOrder chan<- drivers.ButtonEvent, numFloors int) {
+	rm := orders.NewRequestMatrix(numFloors)
 	for {
-		<-q.ElevatorDone // Wait for FSM to signal that the elevator is done
-		q.Mutex.Lock()
-		if len(q.Queue) > 0 {
-			order := q.Queue[0]
-			q.Queue = q.Queue[1:]
-			q.Mutex.Unlock()
-			q.NextOrder <- order.Floor // Send the next floor request to FSM
-		} else {
-			q.Mutex.Unlock()
+		select {
+		case order := <-newOrders:
+			switch order.Button {
+			case drivers.BT_Cab:
+				_ = rm.SetCabRequest(order.Floor, true)
+			case drivers.BT_HallUp:
+				_ = rm.SetHallRequest(order.Floor, 0, true)
+			case drivers.BT_HallDown:
+				_ = rm.SetHallRequest(order.Floor, 1, true)
+			}
+			drivers.SetButtonLamp(order.Button, order.Floor, true)
+
+		case currentFloor := <-elevatorReady:
+			if nextOrder, found := chooseNextOrder(rm, currentFloor); found {
+				sendOrder <- nextOrder
+				/*
+					switch nextOrder.Button {
+					case drivers.BT_Cab:
+						_ = rm.ClearCabRequest(nextOrder.Floor)
+					case drivers.BT_HallUp:
+						_ = rm.ClearHallRequest(nextOrder.Floor, 0)
+					case drivers.BT_HallDown:
+						_ = rm.ClearHallRequest(nextOrder.Floor, 1)
+					}
+					drivers.SetButtonLamp(nextOrder.Button, nextOrder.Floor, false) //Might have to move this at some point
+				*/
+			}
 		}
 	}
 }
 
-// Enqueue sends a new button event to the queue worker
-func (q *OrderQueue) Enqueue(event drivers.ButtonEvent) {
-	q.AddChan <- event
+func chooseNextOrder(rm *orders.RequestMatrix, currentFloor int) (drivers.ButtonEvent, bool) {
+	bestFloor := -1
+	var bestButton drivers.ButtonType = drivers.BT_Cab
+	minDistance := math.MaxInt32
+	found := false
+
+	for floor, active := range rm.CabRequests {
+		if active {
+			dist := abs(currentFloor - floor)
+			if dist < minDistance {
+				minDistance = dist
+				bestFloor = floor
+				bestButton = drivers.BT_Cab
+				found = true
+			}
+		}
+	}
+	for floor, reqs := range rm.HallRequests {
+		for dir, active := range reqs {
+			if active {
+				dist := abs(currentFloor - floor)
+				if dist < minDistance {
+					minDistance = dist
+					bestFloor = floor
+					if dir == 0 {
+						bestButton = drivers.BT_HallUp
+					} else {
+						bestButton = drivers.BT_HallDown
+					}
+					found = true
+				}
+			}
+		}
+	}
+	if found {
+		return drivers.ButtonEvent{Floor: bestFloor, Button: bestButton}, true
+	}
+	return drivers.ButtonEvent{}, false
 }
 
-// PrintQueue prints the current state of the queue for debugging
-func (q *OrderQueue) PrintQueue() {
-	q.Mutex.Lock()
-	defer q.Mutex.Unlock()
-	fmt.Println("Current Queue:")
-	for i, event := range q.Queue {
-		fmt.Printf("%d: Floor %d, Button %d\n", i, event.Floor, event.Button)
+func abs(x int) int {
+	if x < 0 {
+		return -x
 	}
-}
-
-// queuePrinter runs a goroutine that prints the queue every 5 seconds
-func (q *OrderQueue) queuePrinter() {
-	for {
-		time.Sleep(5 * time.Second)
-		q.PrintQueue()
-	}
+	return x
 }

@@ -3,65 +3,66 @@ package main
 import (
 	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/elevator"
-	"fmt"
+	"elevator-project/pkg/orders"
 )
 
+func main() {
+	numFloors := 4
 
-func main(){
+	drivers.Init("localhost:15657", numFloors)
 
-    numFloors := 4
+	// Create the request matrix.
+	rm := orders.NewRequestMatrix(numFloors)
 
-    drivers.Init("localhost:15657", numFloors)
-    
-    //var d drivers.MotorDirection = drivers.MD_Up
-    //drivers.SetMotorDirection(d)
-    
-    drv_buttons := make(chan drivers.ButtonEvent)
-    drv_floors  := make(chan int)
-    drv_obstr   := make(chan bool)
-    drv_stop    := make(chan bool) 
+	// Instantiate the elevator FSM with the request matrix and initial floor.
+	elevatorFSM := elevator.NewElevator(rm)
+	go elevatorFSM.Run()
 
-	queue 		:= elevator.NewOrderQueue()
-	fsmInstance := elevator.NewElevatorFSM(queue)   
-    
-    go drivers.PollButtons(drv_buttons)
-    go drivers.PollFloorSensor(drv_floors)
-    go drivers.PollObstructionSwitch(drv_obstr)
-    go drivers.PollStopButton(drv_stop)
-    
-	go func() {
-		for order := range queue.NextOrder {
-			fsmInstance.NextOrder <- order
-		}
-	}()
-	
-    
-		for {
-			select {
-			case buttonEvent := <-drv_buttons:
-				fmt.Printf("Button Pressed: %+v\n", buttonEvent)
-				drivers.SetButtonLamp(buttonEvent.Button, buttonEvent.Floor, true)
-				queue.Enqueue(buttonEvent)
-	
-			case floor := <-drv_floors:
-				fmt.Printf("Arrived at floor: %+v\n", floor)
-				fsmInstance.HandleEvent("floor_arrival", floor)
-	
-			case obstruction := <-drv_obstr:
-				fmt.Printf("Obstruction detected: %+v\n", obstruction)
-				if obstruction {
-					fsmInstance.HandleEvent("obstruction", 1)
-				} else {
-					fsmInstance.HandleEvent("obstruction", 0)
-				}
-	
-			case stop := <-drv_stop:
-				fmt.Printf("Stop button pressed: %+v\n", stop)
-				for f := 0; f < numFloors; f++ {
-					for b := drivers.ButtonType(0); b < 3; b++ {
-						drivers.SetButtonLamp(b, f, false)
-					}
+	// Create channels to receive events from the drivers.
+	drvButtons := make(chan drivers.ButtonEvent)
+	drvFloors := make(chan int)
+	drvObstr := make(chan bool)
+	drvStop := make(chan bool)
+
+	go drivers.PollButtons(drvButtons)
+	go drivers.PollFloorSensor(drvFloors)
+	go drivers.PollObstructionSwitch(drvObstr)
+	go drivers.PollStopButton(drvStop)
+
+	for {
+		select {
+		case be := <-drvButtons:
+			// Update the request matrix with the new order.
+			switch be.Button {
+			case drivers.BT_Cab:
+				_ = rm.SetCabRequest(be.Floor, true)
+			case drivers.BT_HallUp:
+				_ = rm.SetHallRequest(be.Floor, 0, true)
+			case drivers.BT_HallDown:
+				_ = rm.SetHallRequest(be.Floor, 1, true)
+			}
+			drivers.SetButtonLamp(be.Button, be.Floor, true)
+			//rm.DebugPrint()
+
+		case <-drvFloors:
+			// Notify the FSM that the elevator has arrived at a floor.
+			elevatorFSM.UpdateElevatorState(elevator.EventArrivedAtFloor)
+
+		case obstr := <-drvObstr:
+			// Notify the FSM of door obstruction events.
+			if obstr {
+				elevatorFSM.UpdateElevatorState(elevator.EventDoorObstructed)
+			} else {
+				elevatorFSM.UpdateElevatorState(elevator.EventDoorReleased)
+			}
+
+		case <-drvStop:
+			// Clear all button lamps.
+			for f := 0; f < numFloors; f++ {
+				for b := drivers.ButtonType(0); b < 3; b++ {
+					drivers.SetButtonLamp(b, f, false)
 				}
 			}
 		}
 	}
+}
