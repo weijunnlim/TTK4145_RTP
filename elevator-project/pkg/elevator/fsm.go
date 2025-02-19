@@ -3,6 +3,7 @@ package elevator
 import (
 	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/orders"
+	"elevator-project/pkg/state"
 	"fmt"
 	"time"
 )
@@ -28,17 +29,19 @@ const (
 	EventSetError
 )
 
+//used for internal elevator logic and handlig
 type Elevator struct {
-	state        ElevatorState
-	currentFloor int
-	targetFloor  int
-	rm           *orders.RequestMatrix
-	orders       chan drivers.ButtonEvent
-	fsmEvents    chan FsmEvent
-	doorTimer    *time.Timer
+	elevatorID	 	int
+	state        	ElevatorState
+	currentFloor 	int
+	targetFloor  	int
+	requestMatrix   *orders.RequestMatrix //should cahnge the variable name to requestMatrix
+	orders       	chan drivers.ButtonEvent
+	fsmEvents    	chan FsmEvent
+	doorTimer    	*time.Timer
 }
 
-func NewElevator(rm *orders.RequestMatrix) *Elevator {
+func NewElevator(rm *orders.RequestMatrix, elevatorID int) *Elevator {
 	drivers.SetMotorDirection(drivers.MD_Up)
 	foundFloorChan := make(chan int)
 
@@ -60,9 +63,10 @@ func NewElevator(rm *orders.RequestMatrix) *Elevator {
 	validFloor := <-foundFloorChan
 
 	return &Elevator{
+		elevatorID:   elevatorID,
 		state:        Idle,
 		currentFloor: validFloor,
-		rm:           rm,
+		requestMatrix:rm,
 		orders:       make(chan drivers.ButtonEvent, 10),
 		fsmEvents:    make(chan FsmEvent, 10),
 	}
@@ -169,7 +173,7 @@ func (e *Elevator) transitionTo(newState ElevatorState) {
 // If the elevator is moving, it updates the target floor if the new order lies
 // between the current floor and the current target, but leaves the request intact.
 func (e *Elevator) checkAndAssignOptimalOrder() {
-	order, found := OptimalAssignment(e.rm, e.currentFloor, e.currentDirection())
+	order, found := OptimalAssignment(e.requestMatrix, e.currentFloor, e.currentDirection())
 	if found {
 		if e.state == Idle {
 			fmt.Printf("[ElevatorFSM] Optimal order found and cleared (Idle): Floor %d, Button %v\n", order.Floor, order.Button)
@@ -210,17 +214,35 @@ func (e *Elevator) clearAllLigths() {
 }
 
 func (e *Elevator) elevatorAtCorrectFloor() {
-	if e.rm.CabRequests[e.currentFloor] {
-		_ = e.rm.ClearCabRequest(e.currentFloor)
+	if e.requestMatrix.CabRequests[e.currentFloor] {
+		_ = e.requestMatrix.ClearCabRequest(e.currentFloor)
 	}
-	if e.rm.HallRequests[e.currentFloor][0] {
-		_ = e.rm.ClearHallRequest(e.currentFloor, 0)
+	if e.requestMatrix.HallRequests[e.currentFloor][0] {
+		_ = e.requestMatrix.ClearHallRequest(e.currentFloor, 0)
 	}
-	if e.rm.HallRequests[e.currentFloor][1] {
-		_ = e.rm.ClearHallRequest(e.currentFloor, 1)
+	if e.requestMatrix.HallRequests[e.currentFloor][1] {
+		_ = e.requestMatrix.ClearHallRequest(e.currentFloor, 1)
 	}
 	drivers.SetMotorDirection(drivers.MD_Stop)
 	drivers.SetDoorOpenLamp(true)
 	e.clearAllLigths()
 	e.transitionTo(DoorOpen)
+}
+
+// GetStatus returns a state.ElevatorStatus with the current state of the elevator.
+// The LastUpdated field is set to time.Now() at the moment of calling this method.
+func (e *Elevator) GetStatus() state.ElevatorStatus {
+	// If requestMatrix is stored as a pointer internally, we can dereference it.
+	var reqMatrix orders.RequestMatrix
+	if e.requestMatrix != nil {
+		reqMatrix = *e.requestMatrix
+	}
+	return state.ElevatorStatus{
+		ElevatorID:    e.elevatorID,
+		State:         int(e.state), //cant export state, look into this later
+		CurrentFloor:  e.currentFloor,
+		TargetFloor:   e.targetFloor,
+		LastUpdated:   time.Now(), // or use a stored timestamp if you maintain one
+		RequestMatrix: reqMatrix,
+	}
 }

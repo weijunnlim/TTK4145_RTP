@@ -1,70 +1,70 @@
 package transport
 
-//Contains code for sending and receiving JSON messages over UDP, with room to support TCP later.
-
 import (
-	"encoding/json"
+	"elevator-project/pkg/message"
 	"fmt"
 	"net"
-	"time"
 )
 
-// Message defines the structure of the JSON messages that the UDP listener expects.
-// Adjust the Payload type as needed for your application.
-type Message struct {
-	Type      string          `json:"type"`      
-	Seq       uint64          `json:"seq"`       
-	Timestamp time.Time       `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload"`
-}
-
-// StartUDPListener creates a UDP listener on the specified address (e.g., ":8000").
-// It continuously reads incoming UDP packets, unmarshals them as JSON, and prints the parsed message.
-func StartUDPListener(address string) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", address)
+// StartServer starts a UDP server listening on listenAddr.
+// The handleMsg callback is invoked whenever a valid Message is received.
+func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *net.UDPAddr)) error {
+	addr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("error resolving address %s: %v", address, err)
+		return err
 	}
-
-	conn, err := net.ListenUDP("udp", udpAddr)
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return fmt.Errorf("error listening on address %s: %v", address, err)
+		return err
 	}
 	defer conn.Close()
 
-	fmt.Printf("UDP server listening on %s\n", address)
-
-	// Create a buffer to store incoming data.
-	// Adjust the size if you expect larger messages.
-	buf := make([]byte, 4096)
-
+	buf := make([]byte, 1024)
+	fmt.Printf("Server listening on %s\n", listenAddr)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			fmt.Printf("Error reading from UDP: %v\n", err)
+			fmt.Println("Error reading UDP message:", err)
+			continue
+		}
+		msg, err := message.Unmarshal(buf[:n])
+		if err != nil {
+			fmt.Println("Error unmarshaling message:", err)
 			continue
 		}
 
-		// Log the details about the received packet.
-		fmt.Printf("Received %d bytes from %s\n", n, remoteAddr.String())
+		//fmt.Printf("Received message from %s: %+v\n", remoteAddr, msg)
 
-		// Unmarshal the JSON data into a Message struct.
-		var msg Message
-		if err := json.Unmarshal(buf[:n], &msg); err != nil {
-			fmt.Printf("Error unmarshaling JSON message: %v\n", err)
-			continue
+		// For order messages, send an ACK back.
+		if msg.Type == message.Order {
+			sendAck(conn, remoteAddr, msg.Seq, 0)
 		}
 
-		// Process or log the message.
-		// In this example, we simply print the message fields.
-		fmt.Printf("Received message:\n")
-		fmt.Printf("  Type: %s\n", msg.Type)
-		fmt.Printf("  Seq: %d\n", msg.Seq)
-		fmt.Printf("  Timestamp: %s\n", msg.Timestamp.Format(time.RFC3339))
-		fmt.Printf("  Payload: %s\n", string(msg.Payload))
+		if msg.Type == message.Heartbeat {
+			//Should update a "last seen" variable
+		}
+
+		// Invoke the provided callback to handle the message.
+		handleMsg(msg, remoteAddr)
 	}
+}
 
-	// This function never reaches this point because of the infinite loop,
-	// but it's here to satisfy the function signature.
-	// return nil
+// sendAck sends an acknowledgment for a received order message.
+func sendAck(conn *net.UDPConn, addr *net.UDPAddr, seq int, elevatorID int) {
+	ackMsg := message.Message{
+		Type:       message.Ack,
+		ElevatorID: elevatorID,
+		AckSeq:     seq,
+	}
+	data, err := message.Marshal(ackMsg)
+	if err != nil {
+		fmt.Println("Error marshaling ACK message:", err)
+		return
+	}
+	_, err = conn.WriteToUDP(data, addr)
+	if err != nil {
+		fmt.Println("Error sending ACK message:", err)
+	} else {
+		fmt.Printf("Sent ACK for seq %d to %s\n", seq, addr.String())
+	}
 }

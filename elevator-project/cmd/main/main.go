@@ -1,20 +1,31 @@
 package main
 
 import (
+	"elevator-project/app"
 	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/elevator"
 	"elevator-project/pkg/orders"
+	"elevator-project/pkg/transport"
+	"fmt"
 )
 
 func main() {
+	elevatorID := 1
 	numFloors := 4
 
 	drivers.Init("localhost:15657", numFloors)
 
-	rm := orders.NewRequestMatrix(numFloors)
+	requestMatrix:= orders.NewRequestMatrix(numFloors)
 
-	elevatorFSM := elevator.NewElevator(rm)
+	elevatorFSM := elevator.NewElevator(requestMatrix, elevatorID)
 	go elevatorFSM.Run()
+
+	go func() {
+		err := transport.StartServer("127.0.0.1:8000", app.HandleMessage)
+		if err != nil {
+			fmt.Println("Server error:", err)
+		}
+	}()
 
 	drvButtons := make(chan drivers.ButtonEvent)
 	drvFloors := make(chan int)
@@ -31,11 +42,11 @@ func main() {
 		case be := <-drvButtons:
 			switch be.Button {
 			case drivers.BT_Cab:
-				_ = rm.SetCabRequest(be.Floor, true)
+				_ = requestMatrix.SetCabRequest(be.Floor, true)
 			case drivers.BT_HallUp:
-				_ = rm.SetHallRequest(be.Floor, 0, true)
+				_ = requestMatrix.SetHallRequest(be.Floor, 0, true)
 			case drivers.BT_HallDown:
-				_ = rm.SetHallRequest(be.Floor, 1, true)
+				_ = requestMatrix.SetHallRequest(be.Floor, 1, true)
 			}
 			drivers.SetButtonLamp(be.Button, be.Floor, true)
 
