@@ -6,26 +6,35 @@ import (
 	"elevator-project/pkg/elevator"
 	"elevator-project/pkg/orders"
 	"elevator-project/pkg/transport"
+	"flag"
 	"fmt"
 )
 
 func main() {
-	elevatorID := 1
+	//Collecting flags and parsing them to handle correct setup of multiple elevators running on the same computer
+	elevatorID := flag.Int("ID", 0, "elevatorID")
+	UDPlistenAddr := flag.String("UDPaddr", "", "Listen UDP address (e.g., 127.0.0.1:8001)")
+	elevatorAddrPtr := flag.String("elevAddr", "", "Elevator address")
+	flag.Parse()
+
+	elevatorAddr := "localhost:" + *elevatorAddrPtr
 	numFloors := 4
 
-	drivers.Init("localhost:15657", numFloors)
+	drivers.Init(elevatorAddr, numFloors)
 
 	requestMatrix:= orders.NewRequestMatrix(numFloors)
 
-	elevatorFSM := elevator.NewElevator(requestMatrix, elevatorID)
+	elevatorFSM := elevator.NewElevator(requestMatrix, *elevatorID)
 	go elevatorFSM.Run()
 
 	go func() {
-		err := transport.StartServer("127.0.0.1:8000", app.HandleMessage)
+		err := transport.StartServer(*UDPlistenAddr, app.HandleMessage, elevatorFSM)
 		if err != nil {
 			fmt.Println("Server error:", err)
 		}
 	}()
+
+	go app.StartHeartbeat(*UDPlistenAddr, *elevatorID)
 
 	drvButtons := make(chan drivers.ButtonEvent)
 	drvFloors := make(chan int)

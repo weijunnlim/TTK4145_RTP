@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"net"
 	"syscall"
-	"golang.org/x/sys/unix"
-	"elevator-project/pkg/elevator"
 )
 
 // StartServer starts a UDP server on listenAddr with socket reuse options enabled.
 // The handleMsg callback is invoked whenever a valid Message is received.
-func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *net.UDPAddr), elev *elevator.Elevator) error {
+func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *net.UDPAddr)) error {
 	conn, err := listenUDPWithReuse(listenAddr)
 	if err != nil {
 		return err
@@ -31,11 +29,6 @@ func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *ne
 		msg, err := message.Unmarshal(buf[:n])
 		if err != nil {
 			fmt.Println("Error unmarshaling message:", err)
-			continue
-		}
-
-		if msg.ElevatorID == elev.ElevatorID {
-			//skips messages from itself
 			continue
 		}
 
@@ -65,8 +58,8 @@ func listenUDPWithReuse(address string) (*net.UDPConn, error) {
 					controlErr = err
 					return
 				}
-				// Enable port reuse using the unix package.
-				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+				// Enable port reuse (note: may not be supported on all platforms).
+				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
 					controlErr = err
 					return
 				}
