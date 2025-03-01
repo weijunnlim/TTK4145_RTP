@@ -22,13 +22,13 @@ func main() {
 
 	drivers.Init(elevatorAddr, numFloors)
 
-	requestMatrix:= orders.NewRequestMatrix(numFloors)
+	requestMatrix := orders.NewRequestMatrix(numFloors)
 
 	elevatorFSM := elevator.NewElevator(requestMatrix, *elevatorID)
 	go elevatorFSM.Run()
 
 	go func() {
-		err := transport.StartServer(*UDPlistenAddr, app.HandleMessage, elevatorFSM)
+		err := transport.StartServer(*UDPlistenAddr, app.HandleMessage)
 		if err != nil {
 			fmt.Println("Server error:", err)
 		}

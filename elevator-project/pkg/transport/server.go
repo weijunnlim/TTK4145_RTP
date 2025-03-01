@@ -1,27 +1,26 @@
 package transport
 
 import (
-	"context"
 	"elevator-project/pkg/message"
 	"fmt"
 	"net"
-	"syscall"
-	"golang.org/x/sys/unix"
-	"elevator-project/pkg/elevator"
 )
 
-// StartServer starts a UDP server on listenAddr with socket reuse options enabled.
+// StartServer starts a UDP server listening on listenAddr.
 // The handleMsg callback is invoked whenever a valid Message is received.
-func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *net.UDPAddr), elev *elevator.Elevator) error {
-	conn, err := listenUDPWithReuse(listenAddr)
+func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *net.UDPAddr)) error {
+	addr, err := net.ResolveUDPAddr("udp", listenAddr)
+	if err != nil {
+		return err
+	}
+	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	fmt.Printf("Server listening on %s\n", listenAddr)
-
 	buf := make([]byte, 1024)
+	fmt.Printf("Server listening on %s\n", listenAddr)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -34,58 +33,20 @@ func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *ne
 			continue
 		}
 
-		if msg.ElevatorID == elev.ElevatorID {
-			//skips messages from itself
-			continue
-		}
+		//fmt.Printf("Received message from %s: %+v\n", remoteAddr, msg)
 
 		// For order messages, send an ACK back.
 		if msg.Type == message.Order {
 			sendAck(conn, remoteAddr, msg.Seq, 0)
 		}
 
-		// For heartbeat messages, you might update a "last seen" variable here.
 		if msg.Type == message.Heartbeat {
-			// Update last seen logic here.
+			//Should update a "last seen" variable
 		}
 
-		// Handle the message using the provided callback.
+		// Invoke the provided callback to handle the message.
 		handleMsg(msg, remoteAddr)
 	}
-}
-
-// listenUDPWithReuse creates a UDP connection with SO_REUSEADDR and SO_REUSEPORT options set.
-func listenUDPWithReuse(address string) (*net.UDPConn, error) {
-	lc := net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			var controlErr error
-			err := c.Control(func(fd uintptr) {
-				// Enable address reuse.
-				if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-					controlErr = err
-					return
-				}
-				// Enable port reuse using the unix package.
-				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
-					controlErr = err
-					return
-				}
-			})
-			if err != nil {
-				return err
-			}
-			return controlErr
-		},
-	}
-
-	// Use ListenPacket to create a packet connection.
-	pc, err := lc.ListenPacket(context.Background(), "udp", address)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert the PacketConn to a UDPConn.
-	return pc.(*net.UDPConn), nil
 }
 
 // sendAck sends an acknowledgment for a received order message.
