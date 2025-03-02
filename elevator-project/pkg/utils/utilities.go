@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"elevator-project/pkg/config"
 	"elevator-project/pkg/drivers"
 )
 
@@ -15,4 +16,14 @@ func ButtonTypeToString(b drivers.ButtonType) string {
 	default:
 		return "Unknown button"
 	}
+}
+
+func GetOtherElevatorAddresses(elevatorID int) []string {
+	others := []string{}
+	for id, address := range config.UDPAddresses {
+		if id != elevatorID {
+			others = append(others, address)
+		}
+	}
+	return others
 }

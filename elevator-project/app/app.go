@@ -1,8 +1,11 @@
 package app
 
 import (
+	"elevator-project/pkg/config"
+	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/elevator"
 	"elevator-project/pkg/message"
+	"elevator-project/pkg/orders"
 	"elevator-project/pkg/state"
 	"elevator-project/pkg/transport"
 	"fmt"
@@ -15,39 +18,31 @@ var masterStateStore = state.NewStore()
 func HandleMessage(msg message.Message, addr *net.UDPAddr) {
 	switch msg.Type {
 	case message.State:
-		// Convert the received message to ElevatorStatus.
-		// This assumes that msg.StateData contains fields that match ElevatorStatus.
-		// You might need to do some mapping if your message struct differs.
 		var status state.ElevatorStatus
-		// Option 1: If your message carries JSON that's directly in ElevatorStatus format:
-		// err := json.Unmarshal(receivedData, &status)
-		// Option 2: If you manually construct it from the message fields:
-		
-		status = state.ElevatorStatus{
-			ElevatorID:  	 msg.ElevatorID,
-			State:        	 msg.StateData.State,
-			Direction: 		 msg.StateData.Direction,
-			CurrentFloor:	 msg.StateData.CurrentFloor,
-			TargetFloor: 	 msg.StateData.TargetFloor,
-			RequestMatrix:   msg.StateData.RequestMatrix,
-			LastUpdated:     msg.StateData.LastUpdated,
-		}
-		
-		// Update the master's store.
-		masterStateStore.Update(status)
 
+		status = state.ElevatorStatus{
+			ElevatorID:    msg.ElevatorID,
+			State:         msg.StateData.State,
+			Direction:     msg.StateData.Direction,
+			CurrentFloor:  msg.StateData.CurrentFloor,
+			TargetFloor:   msg.StateData.TargetFloor,
+			RequestMatrix: msg.StateData.RequestMatrix,
+			LastUpdated:   msg.StateData.LastUpdated,
+		}
+
+		masterStateStore.UpdateStatus(status)
 
 	case message.Heartbeat:
-		currentTime := time.Now().Format("15:04:05")
-		fmt.Printf("Handler: Heartbeat from elevator %d at %s\n", msg.ElevatorID, currentTime)
+		masterStateStore.UpdateHeartbeat(msg.ElevatorID)
+		//currentTime := time.Now().Format("15:04:05")
+		//fmt.Printf("Handler: Heartbeat from elevator %d at %s\n", msg.ElevatorID, currentTime)
 	default:
 		//fmt.Printf("Handler received message from %s: %+v\n", addr.String(), msg)
 	}
 }
 
-
-func StartHeartbeat(peerAddr string, elevatorID int) {
-	ticker := time.NewTicker(5 * time.Second)
+func StartHeartbeat(peerAddrs []string, elevatorID int) {
+	ticker := time.NewTicker(100 * time.Millisecond)
 	seq := 1
 	for range ticker.C {
 		hbMsg := message.Message{
@@ -55,49 +50,116 @@ func StartHeartbeat(peerAddr string, elevatorID int) {
 			ElevatorID: elevatorID,
 			Seq:        seq,
 		}
-		err := transport.SendMessage(hbMsg, peerAddr)
-		if err != nil {
-			fmt.Println("Error sending heartbeat message:", err)
-		} else {
-			fmt.Printf("Heartbeat sent (seq: %d) to %s\n", seq, peerAddr)
+
+		for _, addr := range peerAddrs {
+			if err := transport.SendMessage(hbMsg, addr); err != nil {
+				fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, addr, err)
+			} else {
+				//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+			}
 		}
 		seq++
 	}
 }
 
-// StartStateSender packages and sends the elevator's state every 5 seconds to the given peer address.
-// e: pointer to your elevator instance.
-// peerAddr: the UDP address of the master (or target peer).
-func StartStateSender(e *elevator.Elevator, peerAddr string) {
+func StartStateSender(e *elevator.Elevator, peerAddrs []string) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	seq := 1
 	for range ticker.C {
-		// Retrieve the current status of the elevator.
-		status := e.GetStatus()
 
-		// Create a state message using the shared message format.
+		status := e.GetStatus()
+		masterStateStore.UpdateStatus(status)
+
 		stateMsg := message.Message{
 			Type:       message.State,
 			ElevatorID: status.ElevatorID,
 			Seq:        seq,
 			StateData: &message.ElevatorState{
 				ElevatorID:    status.ElevatorID,
-				State:         status.State,         // Assuming status.State is of type model.ElevatorState.
+				State:         status.State,
 				CurrentFloor:  status.CurrentFloor,
 				TargetFloor:   status.TargetFloor,
-				LastUpdated:   time.Now(),           // You can also use status.LastUpdated if maintained.
-				RequestMatrix: status.RequestMatrix, // Assuming this field is serializable.
+				LastUpdated:   time.Now(),
+				RequestMatrix: status.RequestMatrix,
 			},
 		}
 
-		// Send the state message via UDP.
-		if err := transport.SendMessage(stateMsg, peerAddr); err != nil {
-			fmt.Printf("Error sending state message (seq %d): %v\n", seq, err)
-		} else {
-			fmt.Printf("Sent state message (seq: %d) to %s\n", seq, peerAddr)
+		for _, addr := range peerAddrs {
+			if err := transport.SendMessage(stateMsg, addr); err != nil {
+				fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, addr, err)
+			} else {
+				//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+			}
 		}
 		seq++
+	}
+}
+
+func PrintStateStore() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		fmt.Println("----- Current Elevator States -----")
+		statuses := masterStateStore.GetAll()
+		for id, status := range statuses {
+			fmt.Printf("Elevator %d:\n", id)
+			fmt.Printf("  ElevatorID   : %d\n", status.ElevatorID)
+			fmt.Printf("  State        : %d\n", status.State)
+			fmt.Printf("  Direction    : %d\n", status.Direction)
+			fmt.Printf("  CurrentFloor : %d\n", status.CurrentFloor)
+			fmt.Printf("  TargetFloor  : %d\n", status.TargetFloor)
+			fmt.Printf("  LastUpdated  : %v\n", status.LastUpdated.Format("15:04:05"))
+			fmt.Printf("  Hallrequests: %+v\n", status.RequestMatrix.HallRequests)
+			fmt.Printf("  Cabrequests: %+v\n", status.RequestMatrix.CabRequests)
+			fmt.Println()
+		}
+		fmt.Println("-----------------------------------")
+	}
+}
+
+func RunEventLoop(elevatorFSM *elevator.Elevator, reqMatrix *orders.RequestMatrix) {
+	drvButtons := make(chan drivers.ButtonEvent)
+	drvFloors := make(chan int)
+	drvObstr := make(chan bool)
+	drvStop := make(chan bool)
+
+	go drivers.PollButtons(drvButtons)
+	go drivers.PollFloorSensor(drvFloors)
+	go drivers.PollObstructionSwitch(drvObstr)
+	go drivers.PollStopButton(drvStop)
+
+	for {
+		select {
+		case be := <-drvButtons:
+			switch be.Button {
+			case drivers.BT_Cab:
+				_ = reqMatrix.SetCabRequest(be.Floor, true)
+			case drivers.BT_HallUp:
+				_ = reqMatrix.SetHallRequest(be.Floor, 0, true)
+			case drivers.BT_HallDown:
+				_ = reqMatrix.SetHallRequest(be.Floor, 1, true)
+			}
+			drivers.SetButtonLamp(be.Button, be.Floor, true)
+
+		case <-drvFloors:
+			elevatorFSM.UpdateElevatorState(elevator.EventArrivedAtFloor)
+
+		case obstr := <-drvObstr:
+			if obstr {
+				elevatorFSM.UpdateElevatorState(elevator.EventDoorObstructed)
+			} else {
+				elevatorFSM.UpdateElevatorState(elevator.EventDoorReleased)
+			}
+
+		case <-drvStop:
+			for f := 0; f < config.NumFloors; f++ {
+				for b := drivers.ButtonType(0); b < 3; b++ {
+					drivers.SetButtonLamp(b, f, false)
+				}
+			}
+		}
 	}
 }

@@ -31,7 +31,7 @@ const (
 
 //used for internal elevator logic and handlig
 type Elevator struct {
-	elevatorID	 	int
+	ElevatorID	 	int
 	state        	ElevatorState
 	currentFloor 	int
 	targetFloor  	int
@@ -63,7 +63,7 @@ func NewElevator(rm *orders.RequestMatrix, elevatorID int) *Elevator {
 	validFloor := <-foundFloorChan
 
 	return &Elevator{
-		elevatorID:   elevatorID,
+		ElevatorID:   elevatorID,
 		state:        Idle,
 		currentFloor: validFloor,
 		requestMatrix:rm,
@@ -238,7 +238,7 @@ func (e *Elevator) GetStatus() state.ElevatorStatus {
 		reqMatrix = *e.requestMatrix
 	}
 	return state.ElevatorStatus{
-		ElevatorID:    e.elevatorID,
+		ElevatorID:    e.ElevatorID,
 		State:         int(e.state), //cant export state, look into this later
 		CurrentFloor:  e.currentFloor,
 		TargetFloor:   e.targetFloor,

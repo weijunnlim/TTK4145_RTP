@@ -1,29 +1,28 @@
 package message
 
-import(
-	"encoding/json"
+import (
 	"elevator-project/pkg/orders"
-	//"elevator-project/pkg/state"
+	"encoding/json"
 	"time"
 )
 
 type MessageType int
 
 const (
-	State MessageType = iota //worldView
+	State MessageType = iota
 	Order
 	Ack
 	Heartbeat
-	MasterSlaveConfig //to configure whos backup etc
+	MasterSlaveConfig
 )
 
 type ElevatorState struct {
-	ElevatorID    int                `json:"elevatorID"`
-	State         int				 `json:"state"` // Shared type from model package.
-	Direction     int				 `json:"direction"`
-	CurrentFloor  int                `json:"currentFloor"`
-	TargetFloor   int                `json:"targetFloor"`
-	LastUpdated   time.Time          `json:"lastUpdated"`
+	ElevatorID    int                  `json:"elevatorID"`
+	State         int                  `json:"state"`
+	Direction     int                  `json:"direction"`
+	CurrentFloor  int                  `json:"currentFloor"`
+	TargetFloor   int                  `json:"targetFloor"`
+	LastUpdated   time.Time            `json:"lastUpdated"`
 	RequestMatrix orders.RequestMatrix `json:"requestMatrix"`
 }
 
@@ -31,7 +30,6 @@ type OrderData struct {
 	Floor      int    `json:"floor"`
 	ButtonType string `json:"button_type"`
 }
-
 
 type Message struct {
 	Type       MessageType    `json:"type"`
