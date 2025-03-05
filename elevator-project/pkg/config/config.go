@@ -12,4 +12,10 @@ var UDPAddresses = map[int]string{
 	3: "127.0.0.1:8003",
 }
 
+var UDPAckAddresses = map[int]string{
+	1: "127.0.0.1:8011",
+	2: "127.0.0.1:8012",
+	3: "127.0.0.1:8013",
+}
+
 var NumFloors = 4

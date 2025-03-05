@@ -41,7 +41,7 @@ func HandleMessage(msg message.Message, addr *net.UDPAddr) {
 	}
 }
 
-func StartHeartbeat(peerAddrs []string, elevatorID int) {
+func StartHeartbeat(elevatorID int) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	seq := 1
 	for range ticker.C {
@@ -51,18 +51,20 @@ func StartHeartbeat(peerAddrs []string, elevatorID int) {
 			Seq:        seq,
 		}
 
-		for _, addr := range peerAddrs {
-			if err := transport.SendMessage(hbMsg, addr); err != nil {
-				fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, addr, err)
-			} else {
-				//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+		for i := 1; i < 4; i++ {
+			if i != elevatorID {
+				if err := transport.SendMessage(hbMsg, elevatorID, i); err != nil {
+					fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, config.UDPAckAddresses[i], err)
+				} else {
+					//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+				}
 			}
 		}
 		seq++
 	}
 }
 
-func StartStateSender(e *elevator.Elevator, peerAddrs []string) {
+func StartStateSender(e *elevator.Elevator, elevatorID int) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -86,11 +88,13 @@ func StartStateSender(e *elevator.Elevator, peerAddrs []string) {
 			},
 		}
 
-		for _, addr := range peerAddrs {
-			if err := transport.SendMessage(stateMsg, addr); err != nil {
-				fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, addr, err)
-			} else {
-				//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+		for i := 1; i < 4; i++ {
+			if i != elevatorID {
+				if err := transport.SendMessage(stateMsg, elevatorID, i); err != nil {
+					fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, config.UDPAckAddresses[i], err)
+				} else {
+					//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+				}
 			}
 		}
 		seq++

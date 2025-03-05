@@ -7,7 +7,6 @@ import (
 	"elevator-project/pkg/elevator"
 	"elevator-project/pkg/orders"
 	"elevator-project/pkg/transport"
-	"elevator-project/pkg/utils"
 	"flag"
 )
 
@@ -18,14 +17,13 @@ func main() {
 
 	drivers.Init(config.ElevatorAddresses[*pelevatorID], config.NumFloors)
 
-	peerAddrs := utils.GetOtherElevatorAddresses(*pelevatorID)
 	requestMatrix := orders.NewRequestMatrix(config.NumFloors)
 	elevatorFSM := elevator.NewElevator(requestMatrix, *pelevatorID)
 
 	go elevatorFSM.Run()
-	go transport.StartServer(config.UDPAddresses[*pelevatorID], app.HandleMessage)
-	go app.StartHeartbeat(peerAddrs, *pelevatorID)
-	go app.StartStateSender(elevatorFSM, peerAddrs)
+	go transport.StartServer(*pelevatorID, app.HandleMessage)
+	go app.StartHeartbeat(*pelevatorID)
+	go app.StartStateSender(elevatorFSM, *pelevatorID)
 	go app.PrintStateStore()
 
 	app.RunEventLoop(elevatorFSM, requestMatrix)
