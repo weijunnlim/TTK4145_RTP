@@ -2,6 +2,7 @@ package orders
 
 import (
 	"elevator-project/pkg/drivers"
+	"fmt"
 	"math"
 )
 
@@ -91,13 +92,18 @@ func requestsBelow(e ElevatorState) bool {
 	return false
 }
 
-func anyRequestsAtFloor(e ElevatorState) bool { //Checck as current floor
-	for _, req := range e.RequestMatrix.HallRequests[e.Floor] { //Iterates through both up and down requests at floor
-		if req { //is active?
+func anyRequestsAtFloor(e ElevatorState) bool {
+	if e.Floor < 0 || e.Floor >= len(e.RequestMatrix.HallRequests) {
+		fmt.Printf("[ERROR] Floor index out of range: %d\n", e.Floor)
+		return false
+	}
+
+	for _, req := range e.RequestMatrix.HallRequests[e.Floor] {
+		if req {
 			return true
 		}
 	}
-	return e.RequestMatrix.CabRequests[e.Floor] //If cab button pressed at this floor (inside elevator) -> return true, if not false
+	return e.RequestMatrix.CabRequests[e.Floor]
 }
 
 func shouldStop(e SimulatedElevator) bool {
@@ -130,33 +136,46 @@ type SimulatedElevator struct {
 }
 
 func CalculateTimeToIdle(e SimulatedElevator) int {
-	duration := 0 //time until elevator is in idle
+	fmt.Printf("[DEBUG] Simulating elevator at Floor %d\n", e.Floor)
 
+	if e.Floor < 0 || e.Floor >= len(e.RequestMat.HallRequests) {
+		fmt.Printf("[ERROR] Invalid floor index: %d\n", e.Floor)
+		return math.MaxInt32
+	}
+
+	duration := 0
 	switch e.Direction {
-	case drivers.MD_Stop: //if not moving, check if it should move
-		e.Direction = drivers.MotorDirection(chooseDirection(ElevatorState{RequestMatrix: e.RequestMat, Floor: e.Floor, Direction: Dirn(e.Direction)}))
+	case drivers.MD_Stop:
+		e.Direction = drivers.MotorDirection(chooseDirection(ElevatorState{
+			RequestMatrix: e.RequestMat,
+			Floor:         e.Floor,
+			Direction:     Dirn(e.Direction),
+		}))
 		if e.Direction == drivers.MD_Stop {
-			return duration //no requets, still idle
+			return duration
 		}
 	case drivers.MD_Up, drivers.MD_Down:
-		duration += travelTime / 2  //assumes halfway to the next floor.
-		e.Floor += int(e.Direction) //increase or decrease floor number
+		duration += travelTime / 2
+		e.Floor += int(e.Direction)
 	}
 
 	for {
-		if shouldStop(e) { //if stops at floor
-			e = clearRequestsAtFloor(e) // Clear any fulfilled requests at this floor
-			duration += doorOpenTime    //Account for door open time
+		if shouldStop(e) {
+			e = clearRequestsAtFloor(e)
+			duration += doorOpenTime
 
 			e.Direction = drivers.MotorDirection(chooseDirection(ElevatorState{
-				RequestMatrix: e.RequestMat, Floor: e.Floor, Direction: Dirn(e.Direction),
+				RequestMatrix: e.RequestMat,
+				Floor:         e.Floor,
+				Direction:     Dirn(e.Direction),
 			}))
+
 			if e.Direction == drivers.MD_Stop {
-				return duration //if no more requests, return total time
+				return duration
 			}
 		}
-		e.Floor += int(e.Direction) // Move to the next floor
-		duration += travelTime      //Add the time it takes to travel one floor
+		e.Floor += int(e.Direction)
+		duration += travelTime
 	}
 }
 
@@ -175,4 +194,39 @@ func AssignElevator(requestFloor int, requestButton drivers.ButtonType, elevator
 		}
 	}
 	return bestElevator //Return the ID of the best elevator
+}
+
+func FindBestElevator(order drivers.ButtonEvent, elevators []string) string {
+	if len(elevators) == 0 {
+		fmt.Println("[ERROR] No elevators available for assignment!")
+		return ""
+	}
+
+	bestElevator := ""
+	bestTime := math.MaxInt32
+
+	for _, addr := range elevators {
+		fmt.Printf("[DEBUG] Evaluating elevator at %s\n", addr)
+
+		// Initialize a request matrix with the correct number of floors
+		requestMatrix := NewRequestMatrix(4) // Use config.NumFloors if applicable
+
+		estimatedTime := CalculateTimeToIdle(SimulatedElevator{
+			Floor:      order.Floor,
+			Direction:  drivers.MD_Stop,
+			RequestMat: requestMatrix, // Correctly initialized
+		})
+
+		fmt.Printf("[DEBUG] Elevator %s estimated idle time: %d\n", addr, estimatedTime)
+
+		if estimatedTime < bestTime {
+			bestTime = estimatedTime
+			bestElevator = addr
+		}
+	}
+
+	if bestElevator == "" {
+		fmt.Println("[ERROR] No valid elevator found!")
+	}
+	return bestElevator
 }

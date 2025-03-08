@@ -29,16 +29,16 @@ const (
 	EventSetError
 )
 
-//used for internal elevator logic and handlig
+// used for internal elevator logic and handlig
 type Elevator struct {
-	ElevatorID	 	int
-	state        	ElevatorState
-	currentFloor 	int
-	targetFloor  	int
-	requestMatrix   *orders.RequestMatrix //should cahnge the variable name to requestMatrix
-	orders       	chan drivers.ButtonEvent
-	fsmEvents    	chan FsmEvent
-	doorTimer    	*time.Timer
+	ElevatorID    int
+	state         ElevatorState
+	currentFloor  int
+	targetFloor   int
+	RequestMatrix *orders.RequestMatrix //should cahnge the variable name to requestMatrix
+	orders        chan drivers.ButtonEvent
+	fsmEvents     chan FsmEvent
+	doorTimer     *time.Timer
 }
 
 func NewElevator(rm *orders.RequestMatrix, elevatorID int) *Elevator {
@@ -63,12 +63,12 @@ func NewElevator(rm *orders.RequestMatrix, elevatorID int) *Elevator {
 	validFloor := <-foundFloorChan
 
 	return &Elevator{
-		ElevatorID:   elevatorID,
-		state:        Idle,
-		currentFloor: validFloor,
-		requestMatrix:rm,
-		orders:       make(chan drivers.ButtonEvent, 10),
-		fsmEvents:    make(chan FsmEvent, 10),
+		ElevatorID:    elevatorID,
+		state:         Idle,
+		currentFloor:  validFloor,
+		RequestMatrix: rm,
+		orders:        make(chan drivers.ButtonEvent, 10),
+		fsmEvents:     make(chan FsmEvent, 10),
 	}
 }
 
@@ -173,7 +173,7 @@ func (e *Elevator) transitionTo(newState ElevatorState) {
 // If the elevator is moving, it updates the target floor if the new order lies
 // between the current floor and the current target, but leaves the request intact.
 func (e *Elevator) checkAndAssignOptimalOrder() {
-	order, found := OptimalAssignment(e.requestMatrix, e.currentFloor, e.currentDirection())
+	order, found := OptimalAssignment(e.RequestMatrix, e.currentFloor, e.currentDirection())
 	if found {
 		if e.state == Idle {
 			fmt.Printf("[ElevatorFSM] Optimal order found and cleared (Idle): Floor %d, Button %v\n", order.Floor, order.Button)
@@ -214,14 +214,14 @@ func (e *Elevator) clearAllLigths() {
 }
 
 func (e *Elevator) elevatorAtCorrectFloor() {
-	if e.requestMatrix.CabRequests[e.currentFloor] {
-		_ = e.requestMatrix.ClearCabRequest(e.currentFloor)
+	if e.RequestMatrix.CabRequests[e.currentFloor] {
+		_ = e.RequestMatrix.ClearCabRequest(e.currentFloor)
 	}
-	if e.requestMatrix.HallRequests[e.currentFloor][0] {
-		_ = e.requestMatrix.ClearHallRequest(e.currentFloor, 0)
+	if e.RequestMatrix.HallRequests[e.currentFloor][0] {
+		_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 0)
 	}
-	if e.requestMatrix.HallRequests[e.currentFloor][1] {
-		_ = e.requestMatrix.ClearHallRequest(e.currentFloor, 1)
+	if e.RequestMatrix.HallRequests[e.currentFloor][1] {
+		_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 1)
 	}
 	drivers.SetMotorDirection(drivers.MD_Stop)
 	drivers.SetDoorOpenLamp(true)
@@ -234,8 +234,8 @@ func (e *Elevator) elevatorAtCorrectFloor() {
 func (e *Elevator) GetStatus() state.ElevatorStatus {
 	// If requestMatrix is stored as a pointer internally, we can dereference it.
 	var reqMatrix orders.RequestMatrix
-	if e.requestMatrix != nil {
-		reqMatrix = *e.requestMatrix
+	if e.RequestMatrix != nil {
+		reqMatrix = *e.RequestMatrix
 	}
 	return state.ElevatorStatus{
 		ElevatorID:    e.ElevatorID,
@@ -245,4 +245,8 @@ func (e *Elevator) GetStatus() state.ElevatorStatus {
 		LastUpdated:   time.Now(), // or use a stored timestamp if you maintain one
 		RequestMatrix: reqMatrix,
 	}
+}
+
+func (e *Elevator) GetRequestMatrix() *orders.RequestMatrix {
+	return e.RequestMatrix
 }
