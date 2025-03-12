@@ -1,3 +1,4 @@
+// app/app.go
 package app
 
 import (
@@ -13,14 +14,11 @@ import (
 	"time"
 )
 
-var masterStateStore = state.NewStore()
-
+// HandleMessage processes incoming messages from peers.
 func HandleMessage(msg message.Message, addr *net.UDPAddr) {
 	switch msg.Type {
 	case message.State:
-		var status state.ElevatorStatus
-
-		status = state.ElevatorStatus{
+		status := state.ElevatorStatus{
 			ElevatorID:    msg.ElevatorID,
 			State:         msg.StateData.State,
 			Direction:     msg.StateData.Direction,
@@ -29,18 +27,29 @@ func HandleMessage(msg message.Message, addr *net.UDPAddr) {
 			RequestMatrix: msg.StateData.RequestMatrix,
 			LastUpdated:   msg.StateData.LastUpdated,
 		}
-
 		masterStateStore.UpdateStatus(status)
 
 	case message.Heartbeat:
+		// Every elevator sends heartbeat.
 		masterStateStore.UpdateHeartbeat(msg.ElevatorID)
-		//currentTime := time.Now().Format("15:04:05")
-		//fmt.Printf("Handler: Heartbeat from elevator %d at %s\n", msg.ElevatorID, currentTime)
+
+	case message.MasterSlaveConfig:
+		// Update our view of the current master.
+		fmt.Printf("Received master config update: new master is elevator %d\n", msg.ElevatorID)
+		CurrentMasterID = msg.ElevatorID
+		if LocalElevatorID != msg.ElevatorID {
+			IsMaster = false
+		} else {
+			IsMaster = true
+		}
+
 	default:
-		//fmt.Printf("Handler received message from %s: %+v\n", addr.String(), msg)
+		// Handle other message types as needed.
 	}
 }
 
+// StartHeartbeat sends heartbeat messages periodically.
+// Now, every elevator sends heartbeat, regardless of role.
 func StartHeartbeat(peerAddrs []string, elevatorID int) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	seq := 1
@@ -50,28 +59,23 @@ func StartHeartbeat(peerAddrs []string, elevatorID int) {
 			ElevatorID: elevatorID,
 			Seq:        seq,
 		}
-
 		for _, addr := range peerAddrs {
 			if err := transport.SendMessage(hbMsg, addr); err != nil {
-				fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, addr, err)
-			} else {
-				//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
+				fmt.Printf("Error sending heartbeat (seq %d) to %s: %v\n", seq, addr, err)
 			}
 		}
 		seq++
 	}
 }
 
+// StartStateSender broadcasts state updates periodically.
 func StartStateSender(e *elevator.Elevator, peerAddrs []string) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-
 	seq := 1
 	for range ticker.C {
-
 		status := e.GetStatus()
 		masterStateStore.UpdateStatus(status)
-
 		stateMsg := message.Message{
 			Type:       message.State,
 			ElevatorID: status.ElevatorID,
@@ -85,22 +89,19 @@ func StartStateSender(e *elevator.Elevator, peerAddrs []string) {
 				RequestMatrix: status.RequestMatrix,
 			},
 		}
-
 		for _, addr := range peerAddrs {
 			if err := transport.SendMessage(stateMsg, addr); err != nil {
 				fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, addr, err)
-			} else {
-				//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
 			}
 		}
 		seq++
 	}
 }
 
+// PrintStateStore prints the current state of all elevators periodically.
 func PrintStateStore() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-
 	for range ticker.C {
 		fmt.Println("----- Current Elevator States -----")
 		statuses := masterStateStore.GetAll()
@@ -112,14 +113,15 @@ func PrintStateStore() {
 			fmt.Printf("  CurrentFloor : %d\n", status.CurrentFloor)
 			fmt.Printf("  TargetFloor  : %d\n", status.TargetFloor)
 			fmt.Printf("  LastUpdated  : %v\n", status.LastUpdated.Format("15:04:05"))
-			fmt.Printf("  Hallrequests: %+v\n", status.RequestMatrix.HallRequests)
-			fmt.Printf("  Cabrequests: %+v\n", status.RequestMatrix.CabRequests)
+			fmt.Printf("  HallRequests : %+v\n", status.RequestMatrix.HallRequests)
+			fmt.Printf("  CabRequests  : %+v\n", status.RequestMatrix.CabRequests)
 			fmt.Println()
 		}
 		fmt.Println("-----------------------------------")
 	}
 }
 
+// RunEventLoop remains unchanged.
 func RunEventLoop(elevatorFSM *elevator.Elevator, reqMatrix *orders.RequestMatrix) {
 	drvButtons := make(chan drivers.ButtonEvent)
 	drvFloors := make(chan int)
@@ -143,21 +145,41 @@ func RunEventLoop(elevatorFSM *elevator.Elevator, reqMatrix *orders.RequestMatri
 				_ = reqMatrix.SetHallRequest(be.Floor, 1, true)
 			}
 			drivers.SetButtonLamp(be.Button, be.Floor, true)
-
 		case <-drvFloors:
 			elevatorFSM.UpdateElevatorState(elevator.EventArrivedAtFloor)
-
 		case obstr := <-drvObstr:
 			if obstr {
 				elevatorFSM.UpdateElevatorState(elevator.EventDoorObstructed)
 			} else {
 				elevatorFSM.UpdateElevatorState(elevator.EventDoorReleased)
 			}
-
 		case <-drvStop:
 			for f := 0; f < config.NumFloors; f++ {
 				for b := drivers.ButtonType(0); b < 3; b++ {
 					drivers.SetButtonLamp(b, f, false)
+				}
+			}
+		}
+	}
+}
+
+func StartMasterProcess(peerAddrs []string, elevatorFSM *elevator.Elevator) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if elevatorFSM.ElevatorID == 1 { // Master elevator check
+			fmt.Println("[Master] Checking for unassigned orders...")
+
+			unassignedOrders := orders.GetUnassignedOrders(elevatorFSM.GetRequestMatrix())
+			fmt.Println("[Master] Unassigned Orders:", unassignedOrders)
+
+			for _, order := range unassignedOrders {
+				assignedElevator := orders.FindBestElevator(order, peerAddrs)
+				fmt.Printf("[Master] Assigning order: Floor %d to Elevator %s\n", order.Floor, assignedElevator)
+
+				if assignedElevator != "" {
+					transport.SendOrderToElevator(order, assignedElevator)
 				}
 			}
 		}

@@ -2,10 +2,13 @@
 package transport
 
 import (
+	"elevator-project/pkg/drivers"
+	"elevator-project/pkg/message"
+	"elevator-project/pkg/utils"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
-	"elevator-project/pkg/message"
 )
 
 // SendMessage sends a Message to the specified peer address.
@@ -51,4 +54,24 @@ func SendMessage(msg message.Message, peerAddr string) error {
 	}
 
 	return nil
+}
+
+func SendOrderToElevator(order drivers.ButtonEvent, elevatorID string) {
+	elevatorIDInt, err := strconv.Atoi(elevatorID)
+	if err != nil {
+		fmt.Println("[Error] Invalid elevator ID format:", elevatorID)
+		return
+	}
+
+	fmt.Printf("[Master] Sending Order: Floor %d to Elevator %d\n", order.Floor, elevatorIDInt)
+
+	msg := message.Message{
+		Type:       message.Order,
+		ElevatorID: elevatorIDInt,
+		OrderData: &message.OrderData{
+			Floor:      order.Floor,
+			ButtonType: utils.ButtonTypeToString(order.Button),
+		},
+	}
+	SendMessage(msg, elevatorID)
 }

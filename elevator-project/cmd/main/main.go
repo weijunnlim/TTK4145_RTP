@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -12,21 +13,43 @@ import (
 )
 
 func main() {
-	//Collecting flags and parsing them to handle correct setup of multiple elevators running on the same computer
 	pelevatorID := flag.Int("ID", 0, "elevatorID")
 	flag.Parse()
 
-	drivers.Init(config.ElevatorAddresses[*pelevatorID], config.NumFloors)
+	// Set the local elevator ID.
+	app.LocalElevatorID = *pelevatorID
 
+	// Initialize roles: Elevator 1 starts as master, others as slaves.
+	if *pelevatorID == 1 {
+		app.IsMaster = true
+		app.CurrentMasterID = 1
+	} else {
+		app.IsMaster = false
+		app.CurrentMasterID = 1
+	}
+
+	drivers.Init(config.ElevatorAddresses[*pelevatorID], config.NumFloors)
 	peerAddrs := utils.GetOtherElevatorAddresses(*pelevatorID)
 	requestMatrix := orders.NewRequestMatrix(config.NumFloors)
 	elevatorFSM := elevator.NewElevator(requestMatrix, *pelevatorID)
 
 	go elevatorFSM.Run()
 	go transport.StartServer(config.UDPAddresses[*pelevatorID], app.HandleMessage)
+
+	// Every elevator sends heartbeat.
 	go app.StartHeartbeat(peerAddrs, *pelevatorID)
+	// Every elevator sends state updates.
 	go app.StartStateSender(elevatorFSM, peerAddrs)
 	go app.PrintStateStore()
+
+	// The master monitors all elevator heartbeats.
+	if *pelevatorID == 1 || app.IsMaster {
+		go app.MonitorElevatorHeartbeats()
+	}
+	// All non-master elevators run MonitorMasterHeartbeat to detect master failure.
+	if *pelevatorID != app.CurrentMasterID {
+		go app.MonitorMasterHeartbeat(peerAddrs)
+	}
 
 	app.RunEventLoop(elevatorFSM, requestMatrix)
 }
