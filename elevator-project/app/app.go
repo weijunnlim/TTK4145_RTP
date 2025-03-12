@@ -14,14 +14,6 @@ import (
 	"time"
 )
 
-// ----- Global Role Management Variables -----
-var LocalElevatorID int = 0 // Set from main.go via flag.
-var IsMaster bool = false   // Will be set true if this elevator is the master.
-var CurrentMasterID int = 1 // Initially, elevator 1 is the master.
-
-// masterStateStore holds the status of all elevators.
-var masterStateStore = state.NewStore()
-
 // HandleMessage processes incoming messages from peers.
 func HandleMessage(msg message.Message, addr *net.UDPAddr) {
 	switch msg.Type {
@@ -126,95 +118,6 @@ func PrintStateStore() {
 			fmt.Println()
 		}
 		fmt.Println("-----------------------------------")
-	}
-}
-
-// MonitorElevatorHeartbeats runs on the master and checks for stale heartbeats
-// from any elevator. If an elevator's heartbeat is older than 5 seconds,
-// it calls ReassignOrders to take over its hall calls.
-func MonitorElevatorHeartbeats() {
-	// This function should run only on the master.
-	if !IsMaster {
-		return
-	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for range ticker.C {
-		statuses := masterStateStore.GetAll()
-		for id, status := range statuses {
-			// Skip self.
-			if id == LocalElevatorID {
-				continue
-			}
-			if time.Since(status.LastUpdated) > 5*time.Second {
-				fmt.Printf("Elevator %d heartbeat stale. Reassigning its orders.\n", id)
-				ReassignOrders(status)
-				// Optionally, you might remove or mark the elevator as failed.
-			}
-		}
-	}
-}
-
-// ReassignOrders takes the orders from a failed elevator and merges them
-// into the global (master's) request matrix.
-// (For hall calls only—per project requirements, cab calls can be handled separately.)
-func ReassignOrders(failedStatus state.ElevatorStatus) {
-	// For every floor, check if there is a hall request from the failed elevator.
-	for floor, hallRequests := range failedStatus.RequestMatrix.HallRequests {
-		for dir, active := range hallRequests {
-			if active {
-				fmt.Printf("Reassigning hall request at floor %d, direction %d from failed elevator %d.\n", floor, dir, failedStatus.ElevatorID)
-				// Here you would merge this into your master's local RequestMatrix.
-				// For example:
-				// globalRequestMatrix.SetHallRequest(floor, dir, true)
-			}
-		}
-	}
-	// Optionally, you can handle cab requests if desired.
-}
-
-// MonitorMasterHeartbeat runs on every non-master elevator to detect a stale master heartbeat.
-// It uses a tie-breaker: if this elevator has the smallest ID among all active slaves, it promotes itself.
-func MonitorMasterHeartbeat(peerAddrs []string) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for range ticker.C {
-		statuses := masterStateStore.GetAll()
-		masterStatus, exists := statuses[CurrentMasterID]
-		if !exists || time.Since(masterStatus.LastUpdated) > 5*time.Second {
-			// Determine the candidate for promotion among all non-master elevators.
-			candidate := LocalElevatorID
-			for id, status := range statuses {
-				// Consider only non-master elevators that have an up-to-date heartbeat.
-				if id != CurrentMasterID && time.Since(status.LastUpdated) <= 5*time.Second && id < candidate {
-					candidate = id
-				}
-			}
-			// Only the candidate (with the smallest ID) promotes itself.
-			if LocalElevatorID == candidate {
-				fmt.Println("Master heartbeat stale. Promoting self to master.")
-				PromoteToMaster(LocalElevatorID, peerAddrs)
-				// Once promoted, break out of the monitoring loop.
-				break
-			}
-		}
-	}
-}
-
-// PromoteToMaster promotes this elevator to master and broadcasts the new configuration.
-func PromoteToMaster(localID int, peerAddrs []string) {
-	IsMaster = true
-	CurrentMasterID = localID
-	fmt.Printf("Elevator %d is now promoted to master.\n", localID)
-	configMsg := message.Message{
-		Type:       message.MasterSlaveConfig,
-		ElevatorID: localID,
-		Seq:        0,
-	}
-	for _, addr := range peerAddrs {
-		if err := transport.SendMessage(configMsg, addr); err != nil {
-			fmt.Printf("Error broadcasting master config to %s: %v\n", addr, err)
-		}
 	}
 }
 
