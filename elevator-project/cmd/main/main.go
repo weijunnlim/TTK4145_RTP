@@ -8,7 +8,6 @@ import (
 	"elevator-project/pkg/elevator"
 	"elevator-project/pkg/orders"
 	"elevator-project/pkg/transport"
-	"elevator-project/pkg/utils"
 	"flag"
 )
 
@@ -28,18 +27,17 @@ func main() {
 		app.CurrentMasterID = 1
 	}
 
+
 	drivers.Init(config.ElevatorAddresses[*pelevatorID], config.NumFloors)
 	peerAddrs := utils.GetOtherElevatorAddresses(*pelevatorID)
 	requestMatrix := orders.NewRequestMatrix(config.NumFloors)
 	elevatorFSM := elevator.NewElevator(requestMatrix, *pelevatorID)
 
 	go elevatorFSM.Run()
-	go transport.StartServer(config.UDPAddresses[*pelevatorID], app.HandleMessage)
+	go transport.StartServer(*pelevatorID, app.HandleMessage)
+	go app.StartHeartbeat(*pelevatorID)
+	go app.StartStateSender(elevatorFSM, *pelevatorID)
 
-	// Every elevator sends heartbeat.
-	go app.StartHeartbeat(peerAddrs, *pelevatorID)
-	// Every elevator sends state updates.
-	go app.StartStateSender(elevatorFSM, peerAddrs)
 	go app.PrintStateStore()
 
 	// The master monitors all elevator heartbeats.

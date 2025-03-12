@@ -1,15 +1,14 @@
 package transport
 
 import (
+	"elevator-project/pkg/config"
 	"elevator-project/pkg/message"
 	"fmt"
 	"net"
 )
 
-// StartServer starts a UDP server listening on listenAddr.
-// The handleMsg callback is invoked whenever a valid Message is received.
-func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *net.UDPAddr)) error {
-	addr, err := net.ResolveUDPAddr("udp", listenAddr)
+func StartServer(elevatorID int, handleMsg func(msg message.Message, addr *net.UDPAddr)) error {
+	addr, err := net.ResolveUDPAddr("udp", config.UDPAddresses[elevatorID])
 	if err != nil {
 		return err
 	}
@@ -20,7 +19,7 @@ func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *ne
 	defer conn.Close()
 
 	buf := make([]byte, 1024)
-	fmt.Printf("Server listening on %s\n", listenAddr)
+	fmt.Printf("Server listening on %s\n", config.UDPAddresses[elevatorID])
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -33,20 +32,26 @@ func StartServer(listenAddr string, handleMsg func(msg message.Message, addr *ne
 			continue
 		}
 
-		//fmt.Printf("Received message from %s: %+v\n", remoteAddr, msg)
+		// If it's an ACK message, ignore it.
+		if msg.Type == message.Ack {
+			continue
+		}
 
 		// For order messages, send an ACK back.
 		if msg.Type == message.Order {
-			sendAck(conn, remoteAddr, msg.Seq, 0)
+			//sendAck(conn, remoteAddr, msg.Seq, 0)
+			ackMsg := message.Message{
+				Type:       message.Ack,
+				ElevatorID: elevatorID,
+				AckSeq:     msg.Seq,
+			}
+			SendMessage(ackMsg, elevatorID, msg.ElevatorID)
 		}
 
-		if msg.Type == message.Heartbeat {
-			//Should update a "last seen" variable
-		}
-
-		// Invoke the provided callback to handle the message.
+		// Only non-ACK messages are passed to the general handler.
 		handleMsg(msg, remoteAddr)
 	}
+
 }
 
 // sendAck sends an acknowledgment for a received order message.

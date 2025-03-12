@@ -14,6 +14,7 @@ const (
 	Ack
 	Heartbeat
 	MasterSlaveConfig
+	Promotion
 )
 
 type ElevatorState struct {
@@ -28,7 +29,7 @@ type ElevatorState struct {
 
 type OrderData struct {
 	Floor      int    `json:"floor"`
-	ButtonType string `json:"button_type"`
+	ButtonType int 	  `json:"button_type"`
 }
 
 type Message struct {
@@ -40,12 +41,10 @@ type Message struct {
 	AckSeq     int            `json:"ack_seq,omitempty"`
 }
 
-// Marshal converts a Message into JSON.
 func Marshal(msg Message) ([]byte, error) {
 	return json.Marshal(msg)
 }
 
-// Unmarshal converts JSON data into a Message.
 func Unmarshal(data []byte) (Message, error) {
 	var msg Message
 	err := json.Unmarshal(data, &msg)
