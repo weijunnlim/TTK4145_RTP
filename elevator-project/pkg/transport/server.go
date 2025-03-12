@@ -51,4 +51,25 @@ func StartServer(elevatorID int, handleMsg func(msg message.Message, addr *net.U
 		// Only non-ACK messages are passed to the general handler.
 		handleMsg(msg, remoteAddr)
 	}
+
+}
+
+// sendAck sends an acknowledgment for a received order message.
+func sendAck(conn *net.UDPConn, addr *net.UDPAddr, seq int, elevatorID int) {
+	ackMsg := message.Message{
+		Type:       message.Ack,
+		ElevatorID: elevatorID,
+		AckSeq:     seq,
+	}
+	data, err := message.Marshal(ackMsg)
+	if err != nil {
+		fmt.Println("Error marshaling ACK message:", err)
+		return
+	}
+	_, err = conn.WriteToUDP(data, addr)
+	if err != nil {
+		fmt.Println("Error sending ACK message:", err)
+	} else {
+		fmt.Printf("Sent ACK for seq %d to %s\n", seq, addr.String())
+	}
 }

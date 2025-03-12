@@ -1,6 +1,7 @@
 package orders
 
 import (
+	"elevator-project/pkg/drivers"
 	"errors"
 	"fmt"
 )
@@ -84,4 +85,30 @@ func (rm *RequestMatrix) DebugPrint() {
 		fmt.Printf("Floor %d: Cab: %s, Hall Up: %s, Hall Down: %s\n", floor, cabStr, hallUpStr, hallDownStr)
 	}
 	fmt.Println("========================")
+}
+
+func GetUnassignedOrders(rm *RequestMatrix) []drivers.ButtonEvent {
+	var orders []drivers.ButtonEvent
+
+	fmt.Println("[DEBUG] Checking request matrix...")
+
+	// Ensure RequestMatrix is properly initialized
+	if rm == nil {
+		fmt.Println("[ERROR] RequestMatrix is nil!")
+		return orders
+	}
+
+	for floor, hallReq := range rm.HallRequests {
+		fmt.Printf("[DEBUG] Floor %d HallRequests: %+v\n", floor, hallReq)
+		for dir, active := range hallReq {
+			if active {
+				fmt.Printf("[DEBUG] Found active request at Floor %d Direction %d\n", floor, dir)
+				orders = append(orders, drivers.ButtonEvent{
+					Floor:  floor,
+					Button: drivers.ButtonType(dir),
+				})
+			}
+		}
+	}
+	return orders
 }
