@@ -1,52 +1,54 @@
 package message
 
 import (
+	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/orders"
-	"encoding/json"
+	"sync"
 	"time"
 )
 
 type MessageType int
 
 const (
-	State MessageType = iota
-	Order
+	State           MessageType = iota // Full worldview
+	ButtonEvent                        // All types of buttonpresses
+	OrderDelegation                    // Master delegates an order to a specific elevator
+	CompletedOrder
 	Ack
 	Heartbeat
-	MasterSlaveConfig
-	Promotion
+	MasterSlaveConfig // ???
+	Promotion         // Promotion msg letting other elevators know that a new elevator is master?
 )
 
 type ElevatorState struct {
-	ElevatorID    int                  `json:"elevatorID"`
-	State         int                  `json:"state"`
-	Direction     int                  `json:"direction"`
-	CurrentFloor  int                  `json:"currentFloor"`
-	TargetFloor   int                  `json:"targetFloor"`
-	LastUpdated   time.Time            `json:"lastUpdated"`
-	RequestMatrix orders.RequestMatrix `json:"requestMatrix"`
-}
-
-type OrderData struct {
-	Floor      int    `json:"floor"`
-	ButtonType int 	  `json:"button_type"`
+	ElevatorID    int
+	State         int
+	Direction     int
+	CurrentFloor  int
+	TargetFloor   int
+	LastUpdated   time.Time
+	RequestMatrix orders.RequestMatrix
 }
 
 type Message struct {
-	Type       MessageType    `json:"type"`
-	ElevatorID int            `json:"elevator_id"`
-	Seq        int            `json:"seq"`
-	StateData  *ElevatorState `json:"state_data,omitempty"`
-	OrderData  *OrderData     `json:"order_data,omitempty"`
-	AckSeq     int            `json:"ack_seq,omitempty"`
+	Type       MessageType
+	ElevatorID int
+	MsgID      int
+	StateData  *ElevatorState
+	OrderData  drivers.ButtonEvent
+	AckID      int //AckID = msgID for the corresponding message requiring an ack
 }
 
-func Marshal(msg Message) ([]byte, error) {
-	return json.Marshal(msg)
+type MsgID struct {
+	mu sync.Mutex
+	id int
 }
 
-func Unmarshal(data []byte) (Message, error) {
-	var msg Message
-	err := json.Unmarshal(data, &msg)
-	return msg, err
+func (mc *MsgID) Next() int {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	currentID := mc.id
+	mc.id++
+	return currentID
 }

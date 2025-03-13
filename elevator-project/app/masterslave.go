@@ -1,23 +1,18 @@
 package app
 
 import (
+	"elevator-project/pkg/config"
 	"elevator-project/pkg/message"
 	"elevator-project/pkg/state"
-	"elevator-project/pkg/transport"
 	"fmt"
 	"time"
 )
-
-var IsMaster bool = false
-var CurrentMasterID int = 1
-var LocalElevatorID int = 0
-var masterStateStore = state.NewStore()
 
 // Handle master/slave configuration messages
 func HandleMasterSlaveMessage(msg message.Message) {
 	fmt.Printf("Received master config update: new master is elevator %d\n", msg.ElevatorID)
 	CurrentMasterID = msg.ElevatorID
-	IsMaster = (LocalElevatorID == msg.ElevatorID)
+	IsMaster = (config.ElevatorID == msg.ElevatorID)
 }
 
 // Monitor master heartbeat and elect a new master if necessary
@@ -30,13 +25,13 @@ func MonitorMasterHeartbeat(peerAddrs []string) {
 		masterStatus, exists := statuses[CurrentMasterID]
 
 		if !exists || time.Since(masterStatus.LastUpdated) > 5*time.Second {
-			candidate := LocalElevatorID
+			candidate := config.ElevatorID
 			for id, status := range statuses {
 				if id != CurrentMasterID && time.Since(status.LastUpdated) <= 5*time.Second && id < candidate {
 					candidate = id
 				}
 			}
-			if LocalElevatorID == candidate {
+			if config.ElevatorID == candidate {
 				PromoteToMaster(peerAddrs)
 				break
 			}
@@ -47,7 +42,7 @@ func MonitorMasterHeartbeat(peerAddrs []string) {
 // Promote this elevator to master
 func PromoteToMaster(peerAddrs []string) {
 	IsMaster = true
-	CurrentMasterID = LocalElevatorID
+	/*CurrentMasterID = LocalElevatorID
 	fmt.Printf("Elevator %d is now promoted to master.\n", LocalElevatorID)
 
 	configMsg := message.Message{
@@ -61,6 +56,7 @@ func PromoteToMaster(peerAddrs []string) {
 			fmt.Printf("Error broadcasting master config to %s: %v\n", addr, err)
 		}
 	}
+	*/
 }
 
 // Monitor elevator heartbeats and reassign orders if necessary
@@ -74,7 +70,7 @@ func MonitorElevatorHeartbeats() {
 	for range ticker.C {
 		statuses := masterStateStore.GetAll()
 		for id, status := range statuses {
-			if id == LocalElevatorID {
+			if id == config.ElevatorID {
 				continue
 			}
 			if time.Since(status.LastUpdated) > 5*time.Second {

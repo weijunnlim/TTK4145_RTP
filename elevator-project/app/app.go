@@ -1,4 +1,3 @@
-// app/app.go
 package app
 
 import (
@@ -6,84 +5,110 @@ import (
 	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/elevator"
 	"elevator-project/pkg/message"
-	"elevator-project/pkg/orders"
+	"elevator-project/pkg/network/peers"
 	"elevator-project/pkg/state"
-	"elevator-project/pkg/transport"
 	"fmt"
-	"net"
+	"strconv"
 	"time"
 )
 
-// HandleMessage processes incoming messages from peers.
-func HandleMessage(msg message.Message, addr *net.UDPAddr) {
-	switch msg.Type {
-	case message.State:
-		status := state.ElevatorStatus{
-			ElevatorID:    msg.ElevatorID,
-			State:         msg.StateData.State,
-			Direction:     msg.StateData.Direction,
-			CurrentFloor:  msg.StateData.CurrentFloor,
-			TargetFloor:   msg.StateData.TargetFloor,
-			RequestMatrix: msg.StateData.RequestMatrix,
-			LastUpdated:   msg.StateData.LastUpdated,
+var IsMaster bool = false
+var CurrentMasterID int = 1
+var masterStateStore = state.NewStore()
+var msgID int = 0
+var Peers peers.PeerUpdate //to maintain elevators in network
+
+func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, msgTx chan message.Message, elevatorFSM *elevator.Elevator) {
+	for msg := range msgRx {
+		if msg.ElevatorID != config.ElevatorID {
+			switch msg.Type {
+			case message.Ack:
+				//TODO: check if ack is on correct msg
+				if msg.AckID == msgID {
+					fmt.Printf("Received ACK: %#v\n", msg)
+					ackChan <- msg
+				}
+
+			case message.OrderDelegation:
+				//TODO: Handle new order, add to internal request matrix and send ACK back to master
+				//fmt.Printf("Received Order: %#v, sending ACK...\n", msg)
+				ackMsg := message.Message{
+					Type:       message.Ack,
+					ElevatorID: config.ElevatorID,
+					MsgID:      msgID,
+					AckID:      msg.MsgID,
+				}
+				msgTx <- ackMsg
+				//elevatorFSM.RequestMatrix.SetHallRequest(msg.OrderData.Floor, int(msg.OrderData.Button), true)
+
+			case message.CompletedOrder:
+				//TODO: Notify
+				masterStateStore.ClearHallLight(msg.OrderData.Floor, int(msg.OrderData.Button))
+				elevatorFSM.SetHallLigths(masterStateStore.GetElevatorLights(config.ElevatorID))
+
+			case message.ButtonEvent:
+				//TODO: This has to be linked to the masterroutine that deligates orders
+				//Currentstate: updates statestore.Lights and light the appropriate hall lights. Cab buttons are handled internally
+				masterStateStore.SetHallLight(msg.OrderData.Floor, int(msg.OrderData.Button))
+				elevatorFSM.SetHallLigths(masterStateStore.GetElevatorLights(config.ElevatorID))
+
+			case message.Heartbeat:
+				masterStateStore.UpdateHeartbeat(msg.ElevatorID)
+
+			case message.State:
+				status := state.ElevatorStatus{
+					ElevatorID:    msg.ElevatorID,
+					State:         msg.StateData.State,
+					Direction:     msg.StateData.Direction,
+					CurrentFloor:  msg.StateData.CurrentFloor,
+					TargetFloor:   msg.StateData.TargetFloor,
+					RequestMatrix: msg.StateData.RequestMatrix,
+					LastUpdated:   msg.StateData.LastUpdated,
+				}
+				masterStateStore.UpdateStatus(status)
+
+			case message.MasterSlaveConfig:
+				// Update our view of the current master.
+				fmt.Printf("Received master config update: new master is elevator %d\n", msg.ElevatorID)
+				CurrentMasterID = msg.ElevatorID
+				if config.ElevatorID != msg.ElevatorID {
+					IsMaster = false
+				} else {
+					IsMaster = true
+				}
+
+			default:
+				fmt.Printf("Received message: %#v\n", msg)
+			}
 		}
-		masterStateStore.UpdateStatus(status)
-
-	case message.Heartbeat:
-		// Every elevator sends heartbeat.
-		masterStateStore.UpdateHeartbeat(msg.ElevatorID)
-
-	case message.MasterSlaveConfig:
-		// Update our view of the current master.
-		fmt.Printf("Received master config update: new master is elevator %d\n", msg.ElevatorID)
-		CurrentMasterID = msg.ElevatorID
-		if LocalElevatorID != msg.ElevatorID {
-			IsMaster = false
-		} else {
-			IsMaster = true
-		}
-
-	default:
-		// Handle other message types as needed.
 	}
 }
 
+func StartHeartbeatBC(msgTx chan message.Message) {
+	ticker := time.NewTicker(config.HeartBeatInterval)
 
-func StartHeartbeat(elevatorID int) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	seq := 1
 	for range ticker.C {
 		hbMsg := message.Message{
 			Type:       message.Heartbeat,
-			ElevatorID: elevatorID,
-			Seq:        seq,
+			ElevatorID: config.ElevatorID,
+			MsgID:      msgID,
 		}
-
-
-		for i := 1; i < 4; i++ {
-			if i != elevatorID {
-				if err := transport.SendMessage(hbMsg, elevatorID, i); err != nil {
-					fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, config.UDPAckAddresses[i], err)
-				} else {
-					//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
-				}
-			}
-		}
-		seq++
+		msgTx <- hbMsg
+		msgID++
 	}
 }
 
-func StartStateSender(e *elevator.Elevator, elevatorID int) {
-	ticker := time.NewTicker(5 * time.Second)
+func StartWorldviewBC(e *elevator.Elevator, msgRx chan message.Message, counter *message.MsgID) {
+	ticker := time.NewTicker(config.WorldviewBCInterval)
 	defer ticker.Stop()
-	seq := 1
+
 	for range ticker.C {
 		status := e.GetStatus()
 		masterStateStore.UpdateStatus(status)
 		stateMsg := message.Message{
 			Type:       message.State,
 			ElevatorID: status.ElevatorID,
-			Seq:        seq,
+			MsgID:      counter.Next(),
 			StateData: &message.ElevatorState{
 				ElevatorID:    status.ElevatorID,
 				State:         status.State,
@@ -94,21 +119,11 @@ func StartStateSender(e *elevator.Elevator, elevatorID int) {
 			},
 		}
 
-		for i := 1; i < 4; i++ {
-			if i != elevatorID {
-				if err := transport.SendMessage(stateMsg, elevatorID, i); err != nil {
-					fmt.Printf("Error sending state message (seq %d) to %s: %v\n", seq, config.UDPAckAddresses[i], err)
-				} else {
-					//fmt.Printf("Sent state message (seq: %d) to %s\n", seq, addr)
-				}
-			}
-		}
-		seq++
+		msgRx <- stateMsg
 	}
 }
 
-// PrintStateStore prints the current state of all elevators periodically.
-func PrintStateStore() {
+func DebugPrintStateStore() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -130,8 +145,7 @@ func PrintStateStore() {
 	}
 }
 
-// RunEventLoop remains unchanged.
-func RunEventLoop(elevatorFSM *elevator.Elevator, reqMatrix *orders.RequestMatrix) {
+func MonitorSystemInputs(elevatorFSM *elevator.Elevator, msgTx chan message.Message) {
 	drvButtons := make(chan drivers.ButtonEvent)
 	drvFloors := make(chan int)
 	drvObstr := make(chan bool)
@@ -145,52 +159,85 @@ func RunEventLoop(elevatorFSM *elevator.Elevator, reqMatrix *orders.RequestMatri
 	for {
 		select {
 		case be := <-drvButtons:
-			switch be.Button {
-			case drivers.BT_Cab:
-				_ = reqMatrix.SetCabRequest(be.Floor, true)
-			case drivers.BT_HallUp:
-				_ = reqMatrix.SetHallRequest(be.Floor, 0, true)
-			case drivers.BT_HallDown:
-				_ = reqMatrix.SetHallRequest(be.Floor, 1, true)
+			//BC buttonevent on network
+			buttonEventMsg := message.Message{
+				Type:       message.ButtonEvent,
+				ElevatorID: config.ElevatorID,
+				MsgID:      msgID,
+				OrderData:  be,
 			}
-			drivers.SetButtonLamp(be.Button, be.Floor, true)
+
+			fmt.Println("Button event triggered, sending message")
+			msgTx <- buttonEventMsg
+
+			//If internal event(cab button) add order directly to request matrix
+			if be.Button == drivers.BT_Cab {
+				_ = elevatorFSM.RequestMatrix.SetCabRequest(be.Floor, true)
+				drivers.SetButtonLamp(drivers.BT_Cab, be.Floor, true)
+			}
+
 		case <-drvFloors:
 			elevatorFSM.UpdateElevatorState(elevator.EventArrivedAtFloor)
+
 		case obstr := <-drvObstr:
 			if obstr {
 				elevatorFSM.UpdateElevatorState(elevator.EventDoorObstructed)
 			} else {
 				elevatorFSM.UpdateElevatorState(elevator.EventDoorReleased)
 			}
+
 		case <-drvStop:
-			for f := 0; f < config.NumFloors; f++ {
-				for b := drivers.ButtonType(0); b < 3; b++ {
-					drivers.SetButtonLamp(b, f, false)
-				}
-			}
+			//TODO: Implemnt stop logic
 		}
 	}
 }
 
-func StartMasterProcess(peerAddrs []string, elevatorFSM *elevator.Elevator) {
+// TODO: Fix this function
+func StartMasterProcess(peerAddrs []string, elevatorFSM *elevator.Elevator, msgTx chan message.Message) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	/*
+		for range ticker.C {
+			if elevatorFSM.ElevatorID == 1 { // Master elevator check
+				fmt.Println("[Master] Checking for unassigned orders...")
 
-	for range ticker.C {
-		if elevatorFSM.ElevatorID == 1 { // Master elevator check
-			fmt.Println("[Master] Checking for unassigned orders...")
+				unassignedOrders := orders.GetUnassignedOrders(elevatorFSM.GetRequestMatrix())
+				fmt.Println("[Master] Unassigned Orders:", unassignedOrders)
 
-			unassignedOrders := orders.GetUnassignedOrders(elevatorFSM.GetRequestMatrix())
-			fmt.Println("[Master] Unassigned Orders:", unassignedOrders)
+				for _, order := range unassignedOrders {
+					assignedElevator := orders.FindBestElevator(order, peerAddrs)
+					fmt.Printf("[Master] Assigning order: Floor %d to Elevator %s\n", order.Floor, assignedElevator)
 
-			for _, order := range unassignedOrders {
-				assignedElevator := orders.FindBestElevator(order, peerAddrs)
-				fmt.Printf("[Master] Assigning order: Floor %d to Elevator %s\n", order.Floor, assignedElevator)
 
-				if assignedElevator != "" {
-					transport.SendOrderToElevator(order, assignedElevator)
+					if assignedElevator != "" {
+						orderMsg := message.Message{
+							Type:       message.OrderDelegation,
+							ElevatorID: status.ElevatorID,
+							MsgID:      msgID,
+							OrderData: {},
+							},
+						msgTx <-
+						transport.SendOrderToElevator(order, assignedElevator)
+					}
 				}
 			}
 		}
+
+	*/
+}
+
+func P2Pmonitor() {
+	//This function can be used to trigger events if units exit or enter the network
+	peerUpdateCh := make(chan peers.PeerUpdate)
+	peerTxEnable := make(chan bool)
+	go peers.Transmitter(config.P2Pport, strconv.Itoa(config.ElevatorID), peerTxEnable)
+	go peers.Receiver(config.P2Pport, peerUpdateCh)
+	for {
+		update := <-peerUpdateCh
+		Peers = update
+		fmt.Printf("Peer update:\n")
+		fmt.Printf("  Peers:    %q\n", update.Peers)
+		fmt.Printf("  New:      %q\n", update.New)
+		fmt.Printf("  Lost:     %q\n", update.Lost)
 	}
 }

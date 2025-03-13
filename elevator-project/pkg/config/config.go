@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 var ElevatorAddresses = map[int]string{
 	1: "localhost:15555",
 	2: "localhost:15556",
@@ -19,3 +21,8 @@ var UDPAckAddresses = map[int]string{
 }
 
 var NumFloors = 4
+var ElevatorID = 0
+var HeartBeatInterval = 100 * time.Millisecond
+var WorldviewBCInterval = 5 * time.Second
+var BCport = 15000
+var P2Pport = 16000
