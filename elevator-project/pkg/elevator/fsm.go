@@ -1,7 +1,9 @@
 package elevator
 
 import (
+	"elevator-project/pkg/config"
 	"elevator-project/pkg/drivers"
+	"elevator-project/pkg/message"
 	"elevator-project/pkg/orders"
 	"elevator-project/pkg/state"
 	"fmt"
@@ -35,13 +37,15 @@ type Elevator struct {
 	state         ElevatorState
 	currentFloor  int
 	targetFloor   int
-	RequestMatrix *orders.RequestMatrix //should cahnge the variable name to requestMatrix
+	RequestMatrix *orders.RequestMatrix //should change the variable name to requestMatrix
 	orders        chan drivers.ButtonEvent
 	fsmEvents     chan FsmEvent
 	doorTimer     *time.Timer
+	msgTx         chan message.Message
+	counter       *message.MsgID
 }
 
-func NewElevator(rm *orders.RequestMatrix, elevatorID int) *Elevator {
+func NewElevator(ElevatorID int, msgTx chan message.Message, counter *message.MsgID) *Elevator {
 	drivers.SetMotorDirection(drivers.MD_Up)
 	foundFloorChan := make(chan int)
 
@@ -63,12 +67,14 @@ func NewElevator(rm *orders.RequestMatrix, elevatorID int) *Elevator {
 	validFloor := <-foundFloorChan
 
 	return &Elevator{
-		ElevatorID:    elevatorID,
+		ElevatorID:    ElevatorID,
 		state:         Idle,
 		currentFloor:  validFloor,
-		RequestMatrix: rm,
+		RequestMatrix: orders.NewRequestMatrix(config.NumFloors),
 		orders:        make(chan drivers.ButtonEvent, 10),
 		fsmEvents:     make(chan FsmEvent, 10),
+		msgTx:         msgTx,
+		counter:       counter,
 	}
 }
 
@@ -214,19 +220,37 @@ func (e *Elevator) clearAllLigths() {
 }
 
 func (e *Elevator) elevatorAtCorrectFloor() {
+	completedOrderMsg := message.Message{
+		Type:       message.CompletedOrder,
+		ElevatorID: config.ElevatorID,
+		MsgID:      e.counter.Next(),
+	}
+
 	if e.RequestMatrix.CabRequests[e.currentFloor] {
 		_ = e.RequestMatrix.ClearCabRequest(e.currentFloor)
 	}
-	if e.RequestMatrix.HallRequests[e.currentFloor][0] {
-		_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 0)
+	if e.state == MovingUp {
+		if e.RequestMatrix.HallRequests[e.currentFloor][0] {
+			_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 0)
+			completedOrderMsg.OrderData = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallUp}
+		}
+	} else if e.state == MovingDown {
+		if e.RequestMatrix.HallRequests[e.currentFloor][1] {
+			_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 1)
+			completedOrderMsg.OrderData = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallDown}
+		}
 	}
-	if e.RequestMatrix.HallRequests[e.currentFloor][1] {
-		_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 1)
-	}
+
 	drivers.SetMotorDirection(drivers.MD_Stop)
 	drivers.SetDoorOpenLamp(true)
 	e.clearAllLigths()
 	e.transitionTo(DoorOpen)
+
+	//include updated RequestMatrix
+	//completedOrderMsg.StateData.RequestMatrix = *e.RequestMatrix
+
+	//Notify network that an order has been completed
+	e.msgTx <- completedOrderMsg
 }
 
 // GetStatus returns a state.ElevatorStatus with the current state of the elevator.
@@ -249,4 +273,13 @@ func (e *Elevator) GetStatus() state.ElevatorStatus {
 
 func (e *Elevator) GetRequestMatrix() *orders.RequestMatrix {
 	return e.RequestMatrix
+}
+
+func (e *Elevator) SetHallLigths(matrix [][]bool) {
+	for i := 0; i < config.NumFloors-1; i++ {
+		drivers.SetButtonLamp(drivers.BT_HallUp, i, matrix[i][0])
+	}
+	for i := 1; i < config.NumFloors; i++ {
+		drivers.SetButtonLamp(drivers.BT_HallDown, i, matrix[i][1])
+	}
 }

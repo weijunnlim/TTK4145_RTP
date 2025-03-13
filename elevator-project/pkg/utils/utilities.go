@@ -18,10 +18,10 @@ func ButtonTypeToString(b drivers.ButtonType) string {
 	}
 }
 
-func GetOtherElevatorAddresses(elevatorID int) []string {
+func GetOtherElevatorAddresses(ElevatorID int) []string {
 	others := []string{}
 	for id, address := range config.UDPAddresses {
-		if id != elevatorID {
+		if id != ElevatorID {
 			others = append(others, address)
 		}
 	}

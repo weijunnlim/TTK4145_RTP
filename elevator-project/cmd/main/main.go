@@ -6,48 +6,31 @@ import (
 	"elevator-project/pkg/config"
 	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/elevator"
-	"elevator-project/pkg/orders"
-	"elevator-project/pkg/transport"
+	"elevator-project/pkg/message"
+	"elevator-project/pkg/network/bcast"
 	"flag"
 )
 
 func main() {
-	pelevatorID := flag.Int("ID", 0, "elevatorID")
+	flag.IntVar(&config.ElevatorID, "id", 0, "ElevatorID")
 	flag.Parse()
 
-	// Set the local elevator ID.
-	app.LocalElevatorID = *pelevatorID
+	var msgIDcounter message.MsgID
 
-	// Initialize roles: Elevator 1 starts as master, others as slaves.
-	if *pelevatorID == 1 {
-		app.IsMaster = true
-		app.CurrentMasterID = 1
-	} else {
-		app.IsMaster = false
-		app.CurrentMasterID = 1
-	}
+	drivers.Init(config.ElevatorAddresses[config.ElevatorID], config.NumFloors)
 
+	msgTx := make(chan message.Message)
+	msgRx := make(chan message.Message)
+	ackChan := make(chan message.Message)
+	go bcast.Transmitter(config.BCport, msgTx)
+	go bcast.Receiver(config.BCport, msgRx)
 
-	drivers.Init(config.ElevatorAddresses[*pelevatorID], config.NumFloors)
-	peerAddrs := utils.GetOtherElevatorAddresses(*pelevatorID)
-	requestMatrix := orders.NewRequestMatrix(config.NumFloors)
-	elevatorFSM := elevator.NewElevator(requestMatrix, *pelevatorID)
+	elevator := elevator.NewElevator(config.ElevatorID, msgTx, &msgIDcounter)
+	go app.MessageHandler(msgRx, ackChan, msgTx, elevator)
+	go app.StartHeartbeatBC(msgTx)
+	go elevator.Run()
+	go app.MonitorSystemInputs(elevator, msgTx)
+	go app.P2Pmonitor()
 
-	go elevatorFSM.Run()
-	go transport.StartServer(*pelevatorID, app.HandleMessage)
-	go app.StartHeartbeat(*pelevatorID)
-	go app.StartStateSender(elevatorFSM, *pelevatorID)
-
-	go app.PrintStateStore()
-
-	// The master monitors all elevator heartbeats.
-	if *pelevatorID == 1 || app.IsMaster {
-		go app.MonitorElevatorHeartbeats()
-	}
-	// All non-master elevators run MonitorMasterHeartbeat to detect master failure.
-	if *pelevatorID != app.CurrentMasterID {
-		go app.MonitorMasterHeartbeat(peerAddrs)
-	}
-
-	app.RunEventLoop(elevatorFSM, requestMatrix)
+	select {}
 }
