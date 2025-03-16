@@ -31,18 +31,26 @@ const (
 	EventSetError
 )
 
+type Direction int
+
+const (
+	Up   Direction = 1
+	Down           = -1
+	Stop           = 0
+)
+
 // used for internal elevator logic and handlig
 type Elevator struct {
-	ElevatorID    int
-	state         ElevatorState
-	currentFloor  int
-	targetFloor   int
-	RequestMatrix *orders.RequestMatrix //should change the variable name to requestMatrix
-	orders        chan drivers.ButtonEvent
-	fsmEvents     chan FsmEvent
-	doorTimer     *time.Timer
-	msgTx         chan message.Message
-	counter       *message.MsgID
+	ElevatorID      int
+	state           ElevatorState
+	currentFloor    int
+	travelDirection Direction
+	RequestMatrix   *orders.RequestMatrix //should change the variable name to requestMatrix
+	orders          chan drivers.ButtonEvent
+	fsmEvents       chan FsmEvent
+	doorTimer       *time.Timer
+	msgTx           chan message.Message
+	counter         *message.MsgID
 }
 
 func NewElevator(ElevatorID int, msgTx chan message.Message, counter *message.MsgID) *Elevator {
@@ -67,14 +75,15 @@ func NewElevator(ElevatorID int, msgTx chan message.Message, counter *message.Ms
 	validFloor := <-foundFloorChan
 
 	return &Elevator{
-		ElevatorID:    ElevatorID,
-		state:         Idle,
-		currentFloor:  validFloor,
-		RequestMatrix: orders.NewRequestMatrix(config.NumFloors),
-		orders:        make(chan drivers.ButtonEvent, 10),
-		fsmEvents:     make(chan FsmEvent, 10),
-		msgTx:         msgTx,
-		counter:       counter,
+		ElevatorID:      ElevatorID,
+		state:           Idle,
+		currentFloor:    validFloor,
+		RequestMatrix:   orders.NewRequestMatrix(config.NumFloors),
+		orders:          make(chan drivers.ButtonEvent, 10),
+		fsmEvents:       make(chan FsmEvent, 10),
+		msgTx:           msgTx,
+		counter:         counter,
+		travelDirection: Stop,
 	}
 }
 
@@ -94,7 +103,7 @@ func (e *Elevator) Run() {
 			e.fsmEvents <- EventDoorTimerElapsed
 		default:
 			if e.state == Idle || e.state == MovingUp || e.state == MovingDown {
-				e.checkAndAssignOptimalOrder()
+				e.chooseDirection()
 			}
 			time.Sleep(10 * time.Millisecond) //blocking -> should find a better solution
 		}
@@ -102,30 +111,28 @@ func (e *Elevator) Run() {
 }
 
 func (e *Elevator) handleNewOrder(order drivers.ButtonEvent) {
-	if e.state != Idle && e.state != MovingUp && e.state != MovingDown {
-		e.fsmEvents <- EventSetError
-		return
-	}
-	e.targetFloor = order.Floor
-	switch {
-	case order.Floor == e.currentFloor:
-		e.elevatorAtCorrectFloor()
-	case order.Floor > e.currentFloor:
-		e.transitionTo(MovingUp)
-	case order.Floor < e.currentFloor:
-		e.transitionTo(MovingDown)
+	switch order.Button {
+	case drivers.BT_Cab:
+		e.RequestMatrix.CabRequests[order.Floor] = true
+
+	case drivers.BT_HallUp:
+		e.RequestMatrix.HallRequests[order.Floor][0] = true
+
+	case drivers.BT_HallDown:
+		e.RequestMatrix.HallRequests[order.Floor][0] = true
 	}
 }
 
 func (e *Elevator) handleFSMEvent(ev FsmEvent) {
 	switch ev {
 	case EventArrivedAtFloor:
-		if e.state == MovingUp || e.state == MovingDown {
-			e.currentFloor = drivers.GetFloor()
-			drivers.SetFloorIndicator(e.currentFloor)
-			if e.currentFloor == e.targetFloor {
-				e.elevatorAtCorrectFloor()
-			}
+		e.currentFloor = drivers.GetFloor()
+		drivers.SetFloorIndicator(e.currentFloor)
+		if e.shouldStop() {
+			e.clearHallReqsAtFloor()
+			drivers.SetMotorDirection(drivers.MD_Stop)
+			drivers.SetDoorOpenLamp(true)
+			e.transitionTo(DoorOpen)
 		}
 	case EventDoorTimerElapsed:
 		if e.state == DoorOpen {
@@ -174,30 +181,6 @@ func (e *Elevator) transitionTo(newState ElevatorState) {
 	}
 }
 
-// checkAndAssignOptimalOrder queries the request matrix for an optimal order.
-// If the elevator is idle, it clears the order immediately and processes it.
-// If the elevator is moving, it updates the target floor if the new order lies
-// between the current floor and the current target, but leaves the request intact.
-func (e *Elevator) checkAndAssignOptimalOrder() {
-	order, found := OptimalAssignment(e.RequestMatrix, e.currentFloor, e.currentDirection())
-	if found {
-		if e.state == Idle {
-			fmt.Printf("[ElevatorFSM] Optimal order found and cleared (Idle): Floor %d, Button %v\n", order.Floor, order.Button)
-			e.handleNewOrder(order)
-		} else if e.state == MovingUp {
-			if order.Floor > e.currentFloor && order.Floor < e.targetFloor {
-				fmt.Printf("[ElevatorFSM] Updating target from %d to %d (MovingUp)\n", e.targetFloor, order.Floor)
-				e.targetFloor = order.Floor
-			}
-		} else if e.state == MovingDown {
-			if order.Floor < e.currentFloor && order.Floor > e.targetFloor {
-				fmt.Printf("[ElevatorFSM] Updating target from %d to %d (MovingDown)\n", e.targetFloor, order.Floor)
-				e.targetFloor = order.Floor
-			}
-		}
-	}
-}
-
 func (e *Elevator) currentDirection() drivers.MotorDirection {
 	switch e.state {
 	case MovingUp:
@@ -219,52 +202,6 @@ func (e *Elevator) clearAllLigths() {
 	}
 }
 
-func (e *Elevator) elevatorAtCorrectFloor() {
-	fmt.Println("Elevator arrived at correct floor")
-	completedOrderMsg := message.Message{
-		Type:       message.CompletedOrder,
-		ElevatorID: config.ElevatorID,
-		MsgID:      e.counter.Next(),
-	}
-	if e.currentFloor < 0 || e.currentFloor > 4 {
-		fmt.Printf("Error: currentFloor (%d) out of bounds (0-4)\n", e.currentFloor)
-		return
-	}
-
-	if e.RequestMatrix.CabRequests[e.currentFloor] {
-		fmt.Println("Clearing cab call")
-		_ = e.RequestMatrix.ClearCabRequest(e.currentFloor)
-	}
-
-	fmt.Printf("Current floor: %d, Target floor: %d\n", e.currentFloor, e.targetFloor)
-	if e.targetFloor >= e.currentFloor {
-		fmt.Println("Inside upcheck")
-		if e.RequestMatrix.HallRequests[e.currentFloor][0] {
-			fmt.Println("Clearing moving upwards")
-			_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 0)
-			completedOrderMsg.ButtonEvent = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallUp}
-		}
-	} else if e.targetFloor <= e.currentFloor {
-		fmt.Println("Inside downcheck")
-		if e.RequestMatrix.HallRequests[e.currentFloor][1] {
-			fmt.Println("Clearing moving downwards")
-			_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 1)
-			completedOrderMsg.ButtonEvent = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallDown}
-		}
-	}
-
-	drivers.SetMotorDirection(drivers.MD_Stop)
-	drivers.SetDoorOpenLamp(true)
-	e.clearAllLigths()
-	e.transitionTo(DoorOpen)
-
-	//include updated RequestMatrix
-	//completedOrderMsg.StateData.RequestMatrix = *e.RequestMatrix
-
-	//Notify network that an order has been completed
-	e.msgTx <- completedOrderMsg
-}
-
 // GetStatus returns a state.ElevatorStatus with the current state of the elevator.
 // The LastUpdated field is set to time.Now() at the moment of calling this method.
 func (e *Elevator) GetStatus() state.ElevatorStatus {
@@ -274,12 +211,12 @@ func (e *Elevator) GetStatus() state.ElevatorStatus {
 		reqMatrix = *e.RequestMatrix
 	}
 	return state.ElevatorStatus{
-		ElevatorID:    e.ElevatorID,
-		State:         int(e.state), //cant export state, look into this later
-		CurrentFloor:  e.currentFloor,
-		TargetFloor:   e.targetFloor,
-		LastUpdated:   time.Now(), // or use a stored timestamp if you maintain one
-		RequestMatrix: reqMatrix,
+		ElevatorID:      e.ElevatorID,
+		State:           int(e.state), //cant export state, look into this later
+		CurrentFloor:    e.currentFloor,
+		TravelDirection: int(e.travelDirection),
+		LastUpdated:     time.Now(), // or use a stored timestamp if you maintain one
+		RequestMatrix:   reqMatrix,
 	}
 }
 

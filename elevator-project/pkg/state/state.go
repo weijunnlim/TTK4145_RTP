@@ -11,13 +11,13 @@ import (
 
 // ElevatorStatus holds information about an elevator.
 type ElevatorStatus struct {
-	ElevatorID    int
-	State         int
-	Direction     int // Should be changed to driver.MD?
-	CurrentFloor  int
-	TargetFloor   int
-	LastUpdated   time.Time
-	RequestMatrix orders.RequestMatrix
+	ElevatorID      int
+	State           int
+	Direction       int // Should be changed to driver.MD?
+	CurrentFloor    int
+	travelDirection int
+	LastUpdated     time.Time
+	RequestMatrix   orders.RequestMatrix
 }
 
 // Store holds a map of ElevatorStatus instances.

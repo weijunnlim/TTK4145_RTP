@@ -94,13 +94,13 @@ func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, ms
 
 		case message.State:
 			status := state.ElevatorStatus{
-				ElevatorID:    msg.ElevatorID,
-				State:         msg.StateData.State,
-				Direction:     msg.StateData.Direction,
-				CurrentFloor:  msg.StateData.CurrentFloor,
-				TargetFloor:   msg.StateData.TargetFloor,
-				RequestMatrix: msg.StateData.RequestMatrix,
-				LastUpdated:   msg.StateData.LastUpdated,
+				ElevatorID:      msg.ElevatorID,
+				State:           msg.StateData.State,
+				Direction:       msg.StateData.Direction,
+				CurrentFloor:    msg.StateData.CurrentFloor,
+				travelDirection: msg.StateData.travelDirection,
+				RequestMatrix:   msg.StateData.RequestMatrix,
+				LastUpdated:     msg.StateData.LastUpdated,
 			}
 			masterStateStore.UpdateStatus(status)
 

@@ -21,13 +21,13 @@ const (
 )
 
 type ElevatorState struct {
-	ElevatorID    int
-	State         int
-	Direction     int
-	CurrentFloor  int
-	TargetFloor   int
-	LastUpdated   time.Time
-	RequestMatrix orders.RequestMatrix
+	ElevatorID      int
+	State           int
+	Direction       int
+	CurrentFloor    int
+	TravelDirection int
+	LastUpdated     time.Time
+	RequestMatrix   orders.RequestMatrix
 }
 
 type Message struct {
