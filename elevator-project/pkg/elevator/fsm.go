@@ -220,24 +220,36 @@ func (e *Elevator) clearAllLigths() {
 }
 
 func (e *Elevator) elevatorAtCorrectFloor() {
+	fmt.Println("Elevator arrived at correct floor")
 	completedOrderMsg := message.Message{
 		Type:       message.CompletedOrder,
 		ElevatorID: config.ElevatorID,
 		MsgID:      e.counter.Next(),
 	}
+	if e.currentFloor < 0 || e.currentFloor > 4 {
+		fmt.Printf("Error: currentFloor (%d) out of bounds (0-4)\n", e.currentFloor)
+		return
+	}
 
 	if e.RequestMatrix.CabRequests[e.currentFloor] {
+		fmt.Println("Clearing cab call")
 		_ = e.RequestMatrix.ClearCabRequest(e.currentFloor)
 	}
-	if e.state == MovingUp {
+
+	fmt.Printf("Current floor: %d, Target floor: %d\n", e.currentFloor, e.targetFloor)
+	if e.targetFloor >= e.currentFloor {
+		fmt.Println("Inside upcheck")
 		if e.RequestMatrix.HallRequests[e.currentFloor][0] {
+			fmt.Println("Clearing moving upwards")
 			_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 0)
-			completedOrderMsg.OrderData = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallUp}
+			completedOrderMsg.ButtonEvent = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallUp}
 		}
-	} else if e.state == MovingDown {
+	} else if e.targetFloor <= e.currentFloor {
+		fmt.Println("Inside downcheck")
 		if e.RequestMatrix.HallRequests[e.currentFloor][1] {
+			fmt.Println("Clearing moving downwards")
 			_ = e.RequestMatrix.ClearHallRequest(e.currentFloor, 1)
-			completedOrderMsg.OrderData = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallDown}
+			completedOrderMsg.ButtonEvent = drivers.ButtonEvent{Floor: e.currentFloor, Button: drivers.BT_HallDown}
 		}
 	}
 
@@ -275,11 +287,30 @@ func (e *Elevator) GetRequestMatrix() *orders.RequestMatrix {
 	return e.RequestMatrix
 }
 
-func (e *Elevator) SetHallLigths(matrix [][]bool) {
+func (e *Elevator) SetHallLigths(matrix [][2]bool) {
 	for i := 0; i < config.NumFloors-1; i++ {
 		drivers.SetButtonLamp(drivers.BT_HallUp, i, matrix[i][0])
 	}
 	for i := 1; i < config.NumFloors; i++ {
 		drivers.SetButtonLamp(drivers.BT_HallDown, i, matrix[i][1])
+	}
+}
+
+// In package elevator
+func (e *Elevator) PrintRequestMatrix() {
+	fmt.Println("Request Matrix:")
+
+	// Print Cab Requests
+	fmt.Println("Cab Requests:")
+	for floor, req := range e.RequestMatrix.CabRequests {
+		fmt.Printf("  Floor %d: %v\n", floor, req)
+	}
+
+	// Print Hall Requests
+	fmt.Println("Hall Requests:")
+	for floor, hallReq := range e.RequestMatrix.HallRequests {
+		// Each hallReq is an array with two booleans:
+		// hallReq[0] for the "up" button and hallReq[1] for the "down" button.
+		fmt.Printf("  Floor %d: Up: %v, Down: %v\n", floor, hallReq[0], hallReq[1])
 	}
 }
