@@ -1,6 +1,7 @@
 package app
 
 import (
+	"elevator-project/pkg/HRA"
 	"elevator-project/pkg/config"
 	"elevator-project/pkg/drivers"
 	"elevator-project/pkg/elevator"
@@ -15,73 +16,102 @@ import (
 var IsMaster bool = false
 var CurrentMasterID int = 1
 var masterStateStore = state.NewStore()
-var msgID int = 0
+var msgID = &message.MsgID{}
 var Peers peers.PeerUpdate //to maintain elevators in network
 
 func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, msgTx chan message.Message, elevatorFSM *elevator.Elevator) {
 	for msg := range msgRx {
-		if msg.ElevatorID != config.ElevatorID {
-			switch msg.Type {
-			case message.Ack:
-				//TODO: check if ack is on correct msg
-				if msg.AckID == msgID {
-					fmt.Printf("Received ACK: %#v\n", msg)
-					ackChan <- msg
-				}
-
-			case message.OrderDelegation:
-				//TODO: Handle new order, add to internal request matrix and send ACK back to master
-				//fmt.Printf("Received Order: %#v, sending ACK...\n", msg)
-				ackMsg := message.Message{
-					Type:       message.Ack,
-					ElevatorID: config.ElevatorID,
-					MsgID:      msgID,
-					AckID:      msg.MsgID,
-				}
-				msgTx <- ackMsg
-				//elevatorFSM.RequestMatrix.SetHallRequest(msg.OrderData.Floor, int(msg.OrderData.Button), true)
-
-			case message.CompletedOrder:
-				//TODO: Notify
-				masterStateStore.ClearHallLight(msg.OrderData.Floor, int(msg.OrderData.Button))
-				elevatorFSM.SetHallLigths(masterStateStore.GetElevatorLights(config.ElevatorID))
-
-			case message.ButtonEvent:
-				//TODO: This has to be linked to the masterroutine that deligates orders
-				//Currentstate: updates statestore.Lights and light the appropriate hall lights. Cab buttons are handled internally
-				masterStateStore.SetHallLight(msg.OrderData.Floor, int(msg.OrderData.Button))
-				elevatorFSM.SetHallLigths(masterStateStore.GetElevatorLights(config.ElevatorID))
-
-			case message.Heartbeat:
-				masterStateStore.UpdateHeartbeat(msg.ElevatorID)
-
-			case message.State:
-				status := state.ElevatorStatus{
-					ElevatorID:    msg.ElevatorID,
-					State:         msg.StateData.State,
-					Direction:     msg.StateData.Direction,
-					CurrentFloor:  msg.StateData.CurrentFloor,
-					TargetFloor:   msg.StateData.TargetFloor,
-					RequestMatrix: msg.StateData.RequestMatrix,
-					LastUpdated:   msg.StateData.LastUpdated,
-				}
-				masterStateStore.UpdateStatus(status)
-
-			case message.MasterSlaveConfig:
-				// Update our view of the current master.
-				fmt.Printf("Received master config update: new master is elevator %d\n", msg.ElevatorID)
-				CurrentMasterID = msg.ElevatorID
-				if config.ElevatorID != msg.ElevatorID {
-					IsMaster = false
-				} else {
-					IsMaster = true
-				}
-
-			default:
-				fmt.Printf("Received message: %#v\n", msg)
+		//if msg.ElevatorID != config.ElevatorID {
+		switch msg.Type {
+		case message.Ack:
+			//TODO: check if ack is on correct msg
+			if msg.AckID == msgID.Get() {
+				fmt.Printf("Received ACK: %#v\n", msg)
+				ackChan <- msg
 			}
+
+		case message.OrderDelegation:
+			orderData := msg.OrderData
+
+			myOrderData := orderData[strconv.Itoa(config.ElevatorID)]
+			fmt.Println("My new hallorder are: ")
+			for floor, arr := range myOrderData {
+				fmt.Printf("  Floor %d: Up: %t, Down: %t\n", floor, arr[0], arr[1])
+			}
+
+			events := convertOrderDataToButtonEvents(orderData)
+			for _, event := range events {
+				elevatorFSM.Orders <- event
+			}
+
+			//TODO: Handle new order, add to internal request matrix and send ACK back to master
+			//fmt.Printf("Received Order: %#v, sending ACK...\n", msg)
+			ackMsg := message.Message{
+				Type:       message.Ack,
+				ElevatorID: config.ElevatorID,
+				MsgID:      msgID.Get(),
+				AckID:      msg.MsgID,
+			}
+
+			msgTx <- ackMsg
+			elevatorFSM.SetHallLigths(masterStateStore.HallRequests)
+
+		case message.CompletedOrder:
+			//TODO: Notify
+			fmt.Printf("Order has been completed: Floor: %d, ButtonType: %d\n", msg.ButtonEvent.Floor, int(msg.ButtonEvent.Button))
+			masterStateStore.ClearOrder(msg.ButtonEvent, msg.ElevatorID)
+			//elevatorFSM.SetHallLigths(masterStateStore.GetHallOrders(config.ElevatorID))
+			elevatorFSM.SetHallLigths(masterStateStore.HallRequests)
+
+		case message.ButtonEvent:
+
+			if IsMaster {
+				if msg.ButtonEvent.Button != drivers.BT_Cab {
+					masterStateStore.SetHallRequest(msg.ButtonEvent)
+					newOrder, _ := HRA.HRARun(masterStateStore)
+					orderMsg := message.Message{
+						Type:       message.OrderDelegation,
+						ElevatorID: config.ElevatorID,
+						MsgID:      msgID.Next(),
+						AckID:      msg.MsgID,
+						OrderData:  newOrder,
+					}
+
+					msgTx <- orderMsg
+				}
+
+			}
+
+		case message.Heartbeat:
+			masterStateStore.UpdateHeartbeat(msg.ElevatorID)
+
+		case message.State:
+			status := state.ElevatorStatus{
+				ElevatorID:      msg.ElevatorID,
+				State:           msg.StateData.State,
+				Direction:       msg.StateData.Direction,
+				CurrentFloor:    msg.StateData.CurrentFloor,
+				TravelDirection: msg.StateData.TravelDirection,
+				RequestMatrix:   msg.StateData.RequestMatrix,
+				LastUpdated:     msg.StateData.LastUpdated,
+			}
+			masterStateStore.UpdateStatus(status)
+
+		case message.MasterSlaveConfig:
+			// Update our view of the current master.
+			fmt.Printf("Received master config update: new master is elevator %d\n", msg.ElevatorID)
+			CurrentMasterID = msg.ElevatorID
+			if config.ElevatorID != msg.ElevatorID {
+				IsMaster = false
+			} else {
+				IsMaster = true
+			}
+
+		default:
+			fmt.Printf("Received message: %#v\n", msg)
 		}
 	}
+	//}
 }
 
 func StartHeartbeatBC(msgTx chan message.Message) {
@@ -91,14 +121,13 @@ func StartHeartbeatBC(msgTx chan message.Message) {
 		hbMsg := message.Message{
 			Type:       message.Heartbeat,
 			ElevatorID: config.ElevatorID,
-			MsgID:      msgID,
+			MsgID:      msgID.Next(),
 		}
 		msgTx <- hbMsg
-		msgID++
 	}
 }
 
-func StartWorldviewBC(e *elevator.Elevator, msgRx chan message.Message, counter *message.MsgID) {
+func StartWorldviewBC(e *elevator.Elevator, msgTx chan message.Message, counter *message.MsgID) {
 	ticker := time.NewTicker(config.WorldviewBCInterval)
 	defer ticker.Stop()
 
@@ -110,16 +139,16 @@ func StartWorldviewBC(e *elevator.Elevator, msgRx chan message.Message, counter 
 			ElevatorID: status.ElevatorID,
 			MsgID:      counter.Next(),
 			StateData: &message.ElevatorState{
-				ElevatorID:    status.ElevatorID,
-				State:         status.State,
-				CurrentFloor:  status.CurrentFloor,
-				TargetFloor:   status.TargetFloor,
-				LastUpdated:   time.Now(),
-				RequestMatrix: status.RequestMatrix,
+				ElevatorID:      status.ElevatorID,
+				State:           status.State,
+				CurrentFloor:    status.CurrentFloor,
+				TravelDirection: status.TravelDirection,
+				LastUpdated:     time.Now(),
+				RequestMatrix:   status.RequestMatrix,
 			},
 		}
 
-		msgRx <- stateMsg
+		msgTx <- stateMsg
 	}
 }
 
@@ -135,7 +164,7 @@ func DebugPrintStateStore() {
 			fmt.Printf("  State        : %d\n", status.State)
 			fmt.Printf("  Direction    : %d\n", status.Direction)
 			fmt.Printf("  CurrentFloor : %d\n", status.CurrentFloor)
-			fmt.Printf("  TargetFloor  : %d\n", status.TargetFloor)
+			fmt.Printf("  TravelingDirection  : %d\n", status.TravelDirection)
 			fmt.Printf("  LastUpdated  : %v\n", status.LastUpdated.Format("15:04:05"))
 			fmt.Printf("  HallRequests : %+v\n", status.RequestMatrix.HallRequests)
 			fmt.Printf("  CabRequests  : %+v\n", status.RequestMatrix.CabRequests)
@@ -161,18 +190,17 @@ func MonitorSystemInputs(elevatorFSM *elevator.Elevator, msgTx chan message.Mess
 		case be := <-drvButtons:
 			//BC buttonevent on network
 			buttonEventMsg := message.Message{
-				Type:       message.ButtonEvent,
-				ElevatorID: config.ElevatorID,
-				MsgID:      msgID,
-				OrderData:  be,
+				Type:        message.ButtonEvent,
+				ElevatorID:  config.ElevatorID,
+				MsgID:       msgID.Next(),
+				ButtonEvent: be,
 			}
 
-			fmt.Println("Button event triggered, sending message")
 			msgTx <- buttonEventMsg
 
 			//If internal event(cab button) add order directly to request matrix
 			if be.Button == drivers.BT_Cab {
-				_ = elevatorFSM.RequestMatrix.SetCabRequest(be.Floor, true)
+				elevatorFSM.Orders <- be
 				drivers.SetButtonLamp(drivers.BT_Cab, be.Floor, true)
 			}
 

@@ -31,6 +31,11 @@ func main() {
 	go elevator.Run()
 	go app.MonitorSystemInputs(elevator, msgTx)
 	go app.P2Pmonitor()
+	go app.StartWorldviewBC(elevator, msgTx, &msgIDcounter)
+
+	if config.ElevatorID == 1 {
+		app.IsMaster = true
+	}
 
 	select {}
 }
