@@ -14,9 +14,6 @@ import (
 func main() {
 	flag.IntVar(&config.ElevatorID, "id", 0, "ElevatorID")
 	flag.Parse()
-	if config.ElevatorID == 1 {
-		app.IsMaster = true
-	}
 
 	var msgIDcounter message.MsgID
 
@@ -34,7 +31,11 @@ func main() {
 	go elevator.Run()
 	go app.MonitorSystemInputs(elevator, msgTx)
 	go app.P2Pmonitor()
-	//go app.StartWorldviewBC(elevator, msgRx, &msgIDcounter)
+	go app.StartWorldviewBC(elevator, msgTx, &msgIDcounter)
+
+	if config.ElevatorID == 1 {
+		app.IsMaster = true
+	}
 
 	select {}
 }

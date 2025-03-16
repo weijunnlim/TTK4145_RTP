@@ -72,10 +72,12 @@ func HRARun(st *state.Store) (map[string][][2]bool, error) {
 	}
 
 	// Optionally, print the output
+
 	fmt.Println("Master sending the output:")
 	for k, v := range output {
 		fmt.Printf("%6v : %+v\n", k, v)
 	}
+
 	return output, nil
 }
 

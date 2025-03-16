@@ -46,7 +46,7 @@ type Elevator struct {
 	currentFloor    int
 	travelDirection Direction
 	RequestMatrix   *orders.RequestMatrix //should change the variable name to requestMatrix
-	orders          chan drivers.ButtonEvent
+	Orders          chan drivers.ButtonEvent
 	fsmEvents       chan FsmEvent
 	doorTimer       *time.Timer
 	msgTx           chan message.Message
@@ -79,7 +79,7 @@ func NewElevator(ElevatorID int, msgTx chan message.Message, counter *message.Ms
 		state:           Idle,
 		currentFloor:    validFloor,
 		RequestMatrix:   orders.NewRequestMatrix(config.NumFloors),
-		orders:          make(chan drivers.ButtonEvent, 10),
+		Orders:          make(chan drivers.ButtonEvent, 10),
 		fsmEvents:       make(chan FsmEvent, 10),
 		msgTx:           msgTx,
 		counter:         counter,
@@ -90,7 +90,7 @@ func NewElevator(ElevatorID int, msgTx chan message.Message, counter *message.Ms
 func (e *Elevator) Run() {
 	for {
 		select {
-		case order := <-e.orders:
+		case order := <-e.Orders:
 			e.handleNewOrder(order)
 		case ev := <-e.fsmEvents:
 			e.handleFSMEvent(ev)
@@ -103,7 +103,19 @@ func (e *Elevator) Run() {
 			e.fsmEvents <- EventDoorTimerElapsed
 		default:
 			if e.state == Idle || e.state == MovingUp || e.state == MovingDown {
-				e.chooseDirection()
+				newDirection := e.chooseDirection()
+				if newDirection != e.travelDirection {
+					switch newDirection {
+					case Up:
+						drivers.SetMotorDirection(drivers.MD_Up)
+					case Down:
+						drivers.SetMotorDirection(drivers.MD_Down)
+					case Stop:
+						drivers.SetMotorDirection(drivers.MD_Stop)
+					}
+
+					e.travelDirection = newDirection
+				}
 			}
 			time.Sleep(10 * time.Millisecond) //blocking -> should find a better solution
 		}
@@ -111,6 +123,8 @@ func (e *Elevator) Run() {
 }
 
 func (e *Elevator) handleNewOrder(order drivers.ButtonEvent) {
+	fmt.Printf("New order received type: %d, floor: %d\n", int(order.Button), order.Floor)
+
 	switch order.Button {
 	case drivers.BT_Cab:
 		e.RequestMatrix.CabRequests[order.Floor] = true
@@ -119,7 +133,18 @@ func (e *Elevator) handleNewOrder(order drivers.ButtonEvent) {
 		e.RequestMatrix.HallRequests[order.Floor][0] = true
 
 	case drivers.BT_HallDown:
-		e.RequestMatrix.HallRequests[order.Floor][0] = true
+		e.RequestMatrix.HallRequests[order.Floor][1] = true
+	}
+
+	if order.Floor == e.currentFloor && e.state == Idle ||
+		order.Floor == e.currentFloor && e.state == DoorOpen ||
+		order.Floor == e.currentFloor && e.state == DoorObstructed {
+		fmt.Printf("Received order on same floor. Ordertype: %d, floor: %d\n", int(order.Button), order.Floor)
+		//drivers.SetButtonLamp(order.Button, order.Floor, false)
+		e.clearHallReqsAtFloor()
+		drivers.SetDoorOpenLamp(true)
+		e.transitionTo(DoorOpen)
+		return
 	}
 }
 
@@ -137,8 +162,19 @@ func (e *Elevator) handleFSMEvent(ev FsmEvent) {
 	case EventDoorTimerElapsed:
 		if e.state == DoorOpen {
 			drivers.SetDoorOpenLamp(false)
-			e.transitionTo(Idle)
+			newDirection := e.chooseDirection()
+			switch newDirection {
+			case Stop:
+				e.transitionTo(Idle)
+
+			case Up:
+				e.transitionTo(MovingUp)
+
+			case Down:
+				e.transitionTo(MovingDown)
+			}
 		}
+
 	case EventDoorObstructed:
 		if e.state == DoorOpen {
 			e.transitionTo(DoorObstructed)
@@ -181,31 +217,11 @@ func (e *Elevator) transitionTo(newState ElevatorState) {
 	}
 }
 
-func (e *Elevator) currentDirection() drivers.MotorDirection {
-	switch e.state {
-	case MovingUp:
-		return drivers.MD_Up
-	case MovingDown:
-		return drivers.MD_Down
-	default:
-		return drivers.MD_Stop
-	}
-}
-
 func (e *Elevator) UpdateElevatorState(ev FsmEvent) {
 	e.fsmEvents <- ev
 }
 
-func (e *Elevator) clearAllLigths() {
-	for b := drivers.ButtonType(0); b < 3; b++ {
-		drivers.SetButtonLamp(b, e.currentFloor, false)
-	}
-}
-
-// GetStatus returns a state.ElevatorStatus with the current state of the elevator.
-// The LastUpdated field is set to time.Now() at the moment of calling this method.
 func (e *Elevator) GetStatus() state.ElevatorStatus {
-	// If requestMatrix is stored as a pointer internally, we can dereference it.
 	var reqMatrix orders.RequestMatrix
 	if e.RequestMatrix != nil {
 		reqMatrix = *e.RequestMatrix

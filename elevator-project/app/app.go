@@ -31,22 +31,18 @@ func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, ms
 			}
 
 		case message.OrderDelegation:
-			fmt.Println("New order received")
-			//newHallOrders := msg.OrderData[utils.ElevatorIntToString(config.ElevatorID)]
 			orderData := msg.OrderData
-			for key, matrix := range orderData {
-				fmt.Printf("Key: %s\n", key)
-				for floor, arr := range matrix {
-					fmt.Printf("  Floor %d: Up: %t, Down: %t\n", floor, arr[0], arr[1])
-				}
-			}
+
 			myOrderData := orderData[strconv.Itoa(config.ElevatorID)]
 			fmt.Println("My new hallorder are: ")
 			for floor, arr := range myOrderData {
 				fmt.Printf("  Floor %d: Up: %t, Down: %t\n", floor, arr[0], arr[1])
 			}
-			elevatorFSM.RequestMatrix.HallRequests = myOrderData
-			//elevatorFSM.RequestMatrix.SetHallRequest(msg.OrderData.Floor, int(msg.OrderData.Button), true)
+
+			events := convertOrderDataToButtonEvents(orderData)
+			for _, event := range events {
+				elevatorFSM.Orders <- event
+			}
 
 			//TODO: Handle new order, add to internal request matrix and send ACK back to master
 			//fmt.Printf("Received Order: %#v, sending ACK...\n", msg)
@@ -56,22 +52,19 @@ func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, ms
 				MsgID:      msgID.Get(),
 				AckID:      msg.MsgID,
 			}
+
 			msgTx <- ackMsg
+			elevatorFSM.SetHallLigths(masterStateStore.HallRequests)
 
 		case message.CompletedOrder:
 			//TODO: Notify
-			fmt.Println("Clearing order from HallRequest")
+			fmt.Printf("Order has been completed: Floor: %d, ButtonType: %d\n", msg.ButtonEvent.Floor, int(msg.ButtonEvent.Button))
 			masterStateStore.ClearOrder(msg.ButtonEvent, msg.ElevatorID)
 			//elevatorFSM.SetHallLigths(masterStateStore.GetHallOrders(config.ElevatorID))
+			elevatorFSM.SetHallLigths(masterStateStore.HallRequests)
 
 		case message.ButtonEvent:
-			//TODO: If master calls HRARun function do delegate the new order. Need to broadcast the event and handle it.
-			//Currentstate: updates statestore.Lights and light the appropriate hall lights. Cab buttons are handled internally
-			//masterStateStore.SetHallRequest(msg.ButtonEvent.Floor, int(msg.ButtonEvent.Button))
-			//elevatorFSM.SetHallLigths(masterStateStore.GetHallOrders(config.ElevatorID))
-			//masterStateStore.SetHallRequest(msg.ButtonEvent)
 
-			fmt.Println("New button event received")
 			if IsMaster {
 				if msg.ButtonEvent.Button != drivers.BT_Cab {
 					masterStateStore.SetHallRequest(msg.ButtonEvent)
@@ -83,7 +76,7 @@ func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, ms
 						AckID:      msg.MsgID,
 						OrderData:  newOrder,
 					}
-					fmt.Println("Master sending order")
+
 					msgTx <- orderMsg
 				}
 
@@ -98,7 +91,7 @@ func MessageHandler(msgRx chan message.Message, ackChan chan message.Message, ms
 				State:           msg.StateData.State,
 				Direction:       msg.StateData.Direction,
 				CurrentFloor:    msg.StateData.CurrentFloor,
-				travelDirection: msg.StateData.travelDirection,
+				TravelDirection: msg.StateData.TravelDirection,
 				RequestMatrix:   msg.StateData.RequestMatrix,
 				LastUpdated:     msg.StateData.LastUpdated,
 			}
@@ -134,7 +127,7 @@ func StartHeartbeatBC(msgTx chan message.Message) {
 	}
 }
 
-func StartWorldviewBC(e *elevator.Elevator, msgRx chan message.Message, counter *message.MsgID) {
+func StartWorldviewBC(e *elevator.Elevator, msgTx chan message.Message, counter *message.MsgID) {
 	ticker := time.NewTicker(config.WorldviewBCInterval)
 	defer ticker.Stop()
 
@@ -146,16 +139,16 @@ func StartWorldviewBC(e *elevator.Elevator, msgRx chan message.Message, counter 
 			ElevatorID: status.ElevatorID,
 			MsgID:      counter.Next(),
 			StateData: &message.ElevatorState{
-				ElevatorID:    status.ElevatorID,
-				State:         status.State,
-				CurrentFloor:  status.CurrentFloor,
-				TargetFloor:   status.TargetFloor,
-				LastUpdated:   time.Now(),
-				RequestMatrix: status.RequestMatrix,
+				ElevatorID:      status.ElevatorID,
+				State:           status.State,
+				CurrentFloor:    status.CurrentFloor,
+				TravelDirection: status.TravelDirection,
+				LastUpdated:     time.Now(),
+				RequestMatrix:   status.RequestMatrix,
 			},
 		}
 
-		msgRx <- stateMsg
+		msgTx <- stateMsg
 	}
 }
 
@@ -171,7 +164,7 @@ func DebugPrintStateStore() {
 			fmt.Printf("  State        : %d\n", status.State)
 			fmt.Printf("  Direction    : %d\n", status.Direction)
 			fmt.Printf("  CurrentFloor : %d\n", status.CurrentFloor)
-			fmt.Printf("  TargetFloor  : %d\n", status.TargetFloor)
+			fmt.Printf("  TravelingDirection  : %d\n", status.TravelDirection)
 			fmt.Printf("  LastUpdated  : %v\n", status.LastUpdated.Format("15:04:05"))
 			fmt.Printf("  HallRequests : %+v\n", status.RequestMatrix.HallRequests)
 			fmt.Printf("  CabRequests  : %+v\n", status.RequestMatrix.CabRequests)
@@ -203,12 +196,11 @@ func MonitorSystemInputs(elevatorFSM *elevator.Elevator, msgTx chan message.Mess
 				ButtonEvent: be,
 			}
 
-			fmt.Println("Button event triggered, sending message")
 			msgTx <- buttonEventMsg
 
 			//If internal event(cab button) add order directly to request matrix
 			if be.Button == drivers.BT_Cab {
-				_ = elevatorFSM.RequestMatrix.SetCabRequest(be.Floor, true)
+				elevatorFSM.Orders <- be
 				drivers.SetButtonLamp(drivers.BT_Cab, be.Floor, true)
 			}
 

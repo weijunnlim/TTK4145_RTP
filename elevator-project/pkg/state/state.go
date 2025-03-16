@@ -15,7 +15,7 @@ type ElevatorStatus struct {
 	State           int
 	Direction       int // Should be changed to driver.MD?
 	CurrentFloor    int
-	travelDirection int
+	TravelDirection int
 	LastUpdated     time.Time
 	RequestMatrix   orders.RequestMatrix
 }
