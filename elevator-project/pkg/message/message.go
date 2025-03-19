@@ -31,13 +31,13 @@ type ElevatorState struct {
 }
 
 type Message struct {
-	Type        MessageType
-	ElevatorID  int
-	MsgID       int
-	StateData   *ElevatorState //Why is this a pointer?
-	ButtonEvent drivers.ButtonEvent
-	OrderData   map[string][][2]bool //Hall request
-	AckID       int                  //AckID = msgID for the corresponding message requiring an ack
+	Type        MessageType          `json:"type"`
+	ElevatorID  int                  `json:"elevatorID"`
+	MsgID       int                  `json:"msgID"`
+	StateData   *ElevatorState       `json:"stateData,omitempty"`
+	ButtonEvent drivers.ButtonEvent  `json:"buttonEvent,omitempty"`
+	OrderData   map[string][][2]bool `json:"orderData,omitempty"`
+	AckID       int                  `json:"ackID,omitempty"`
 }
 
 type MsgID struct {

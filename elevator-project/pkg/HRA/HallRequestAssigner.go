@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 type HRAElevState struct {
@@ -22,25 +23,11 @@ type HRAInput struct {
 }
 
 func HRARun(st *state.Store) (map[string][][2]bool, error) {
-	hraExecutable := ""
-	switch runtime.GOOS {
-	case "linux":
-		hraExecutable = "hall_request_assigner"
-	case "windows":
-		hraExecutable = "hall_request_assigner.exe"
-	default:
-		panic("OS not supported")
-	}
-
 	allElevators := st.GetAll()
-
 	statesMap := make(map[string]HRAElevState)
 	for id, elev := range allElevators {
-
 		dirString := directionIntToString(elev.Direction)
-
 		stateString := stateIntToString(elev.State)
-
 		statesMap[strconv.Itoa(id)] = HRAElevState{
 			Behavior:    stateString,
 			Floor:       elev.CurrentFloor,
@@ -60,18 +47,38 @@ func HRARun(st *state.Store) (map[string][][2]bool, error) {
 		return nil, fmt.Errorf("json.Marshal error: %v", err)
 	}
 
-	ret, err := exec.Command("../"+hraExecutable, "-i", string(jsonBytes)).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("exec.Command error: %v, output: %s", err, ret)
+	// Select the executable and command based on the OS.
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("../hall_request_assigner.exe", "-i", string(jsonBytes))
+	case "darwin":
+		cmd = exec.Command("wine", "../hall_request_assigner.exe", "-i", string(jsonBytes))
+	case "linux":
+		cmd = exec.Command("../hall_request_assigner", "-i", string(jsonBytes))
+	default:
+		return nil, fmt.Errorf("OS not supported")
 	}
 
+	ret, err := cmd.CombinedOutput()
+	rawOutput := string(ret)
+	fmt.Println("Raw output from hall_request_assigner:", rawOutput)
+	if err != nil {
+		return nil, fmt.Errorf("exec.Command error: %v, output: %s", err, rawOutput)
+	}
+
+	// Extract the JSON part by finding the first '{'
+	jsonStart := strings.Index(rawOutput, "{")
+	if jsonStart == -1 {
+		return nil, fmt.Errorf("could not find JSON in output: %s", rawOutput)
+	}
+	cleanOutput := rawOutput[jsonStart:]
+
 	output := make(map[string][][2]bool)
-	err = json.Unmarshal(ret, &output)
+	err = json.Unmarshal([]byte(cleanOutput), &output)
 	if err != nil {
 		return nil, fmt.Errorf("json.Unmarshal error: %v", err)
 	}
-
-	// Optionally, print the output
 
 	fmt.Println("Master sending the output:")
 	for k, v := range output {
